@@ -26,7 +26,7 @@ Follow the steps below to get this application fully functional and running usin
 In your terminal clone the project and install dependencies:
 
 ```bash
-git clone $TODO-Where-Will-This-End-Up
+git clone https://github.com/stytchauth/mcp-stytch-consumer-todo-list.git
 cd mcp-stytch-consumer-todo-list
 pnpm i
 ```
@@ -61,6 +61,11 @@ pnpm run dev
 ```
 
 The application will be available at [`http://localhost:3000`](http://localhost:3000) and the MCP server will be available at `http://localhost:3000/sse`.
+
+Test your MCP server using the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector)
+```bash
+npx @modelcontextprotocol/inspector@latest
+```
 
 ##  Deploy to Cloudflare Workers
 
