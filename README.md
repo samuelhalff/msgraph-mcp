@@ -1,4 +1,4 @@
-# Workers + Stytch TODO App MPC Server
+# Workers + Stytch TODO App MCP Server
 
 This is a Workers server that composes three functions:
 * A static TODO app website built using React and Vite on top of [Worker Assets](https://developers.cloudflare.com/workers/static-assets/)
