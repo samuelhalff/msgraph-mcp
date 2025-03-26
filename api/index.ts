@@ -7,13 +7,14 @@ import {Hono} from "hono";
 // Export the TodoMCP class so the Worker runtime can find it
 export {TodoMCP};
 
-export default new Hono<{Bindings: Env}>()
+export default new Hono<{ Bindings: Env }>()
+    .use(cors())
 
     // Mount the TODO API underneath us
     .route('/api', TodoAPI)
 
     // Serve the OAuth Authorization Server response for Dynamic Client Registration
-    .get('/.well-known/oauth-authorization-server', cors({ origin: '*' }), async (c) => {
+    .get('/.well-known/oauth-authorization-server', async (c) => {
         const url = new URL(c.req.url);
         return c.json({
             issuer: c.env.STYTCH_PROJECT_ID,
@@ -31,7 +32,7 @@ export default new Hono<{Bindings: Env}>()
     })
 
     // Let the MCP Server have a go at handling the request
-    .use('/sse', stytchBearerTokenAuthMiddleware)
+    .use('/sse/*', stytchBearerTokenAuthMiddleware)
     .route('/sse', TodoMCP.mount())
 
     // Finally - serve static assets from Vite
