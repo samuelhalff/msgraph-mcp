@@ -28,14 +28,14 @@
 		{
 			"tag": "v1",
 			"new_classes": [
-				"TodoMPC"
+				"TodoMCP"
 			]
 		}
 	],
 	"durable_objects": {
 		"bindings": [
 			{
-				"class_name": "TodoMPC",
+				"class_name": "TodoMCP",
 				"name": "MCP_OBJECT"
 			}
 		]

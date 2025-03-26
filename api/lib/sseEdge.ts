@@ -18,7 +18,7 @@ export class SSEEdgeTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void
 
   /**
-   * Creates a new EdgeSSETransport, which will direct the MPC client to POST messages to messageUrl
+   * Creates a new EdgeSSETransport, which will direct the MCP client to POST messages to messageUrl
    */
   constructor(
     private messageUrl: string,

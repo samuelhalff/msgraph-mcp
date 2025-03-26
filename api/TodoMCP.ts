@@ -5,10 +5,10 @@ import {todoService} from "./TodoService.ts";
 import {AuthenticationContext} from "../types";
 
 /**
- * The `TodoMPC` class exposes the TODO Service via the Model Context Protocol
+ * The `TodoMCP` class exposes the TODO Service via the Model Context Protocol
  * for consumption by API Agents
  */
-export class TodoMPC extends DurableMCP<AuthenticationContext, Env> {
+export class TodoMCP extends DurableMCP<AuthenticationContext, Env> {
     async init() {
     }
     get todoService() {

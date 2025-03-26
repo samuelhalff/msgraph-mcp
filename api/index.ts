@@ -1,11 +1,11 @@
-import {TodoMPC} from "./TodoMPC.ts";
+import {TodoMCP} from "./TodoMCP.ts";
 import {getStytchOAuthEndpointUrl, stytchBearerTokenAuthMiddleware} from "./lib/auth";
 import {TodoAPI} from "./TodoAPI.ts";
 import {cors} from "hono/cors";
 import {Hono} from "hono";
 
-// Export the TodoMPC class so the Worker runtime can find it
-export {TodoMPC};
+// Export the TodoMCP class so the Worker runtime can find it
+export {TodoMCP};
 
 export default new Hono<{Bindings: Env}>()
 
@@ -30,9 +30,9 @@ export default new Hono<{Bindings: Env}>()
         })
     })
 
-    // Let the MPC Server have a go at handling the request
+    // Let the MCP Server have a go at handling the request
     .use('/sse', stytchBearerTokenAuthMiddleware)
-    .route('/sse', TodoMPC.mount())
+    .route('/sse', TodoMCP.mount())
 
     // Finally - serve static assets from Vite
     .mount('/', (req, env) => env.ASSETS.fetch(req))
