@@ -1,8 +1,19 @@
-export type Todo = {
+export type KeyResult = {
     id: string;
     text: string;
-    completed: boolean;
+    attainment: number;
 }
+
+export type Objective = {
+    id: string;
+    objectiveText: string;
+    keyResults: KeyResult[];
+}
+
+export type Permissions = {
+    objective: 'create' | 'read' | 'update' | 'delete';
+    key_result: 'create' | 'read' | 'update' | 'delete';
+};
 
 // Context from the auth process, extracted from the Stytch auth token JWT
 // and provided to the MCP Server as this.props
@@ -17,6 +28,10 @@ type AuthenticationContext = {
         "iat": number,
         "nbf": number,
         "jti": string,
+        'https://stytch.com/organization': {
+            organization_id: string,
+        },
+
     },
     accessToken: string
 }
