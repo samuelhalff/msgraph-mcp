@@ -3,6 +3,7 @@ import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js'
 import {z} from 'zod'
 import {MSGraphService, AuthManager, AuthMode, AuthConfig} from "./MSGraphService.js";
 import {MSGraphAuthContext, Env} from "../types";
+import logger from './lib/logger.js';
 
 /**
  * The `MSGraphMCP` class exposes Microsoft Graph API via the Model Context Protocol
@@ -377,11 +378,13 @@ export class MSGraphMCP {
                             });
                         }
                         
-                        console.log('MCP request received:', { method: body.method, id: body.id });
+                        logger.info('MCP request received', { method: body.method, id: body.id });
+                        logger.debug('Full MCP request body', { body });
+                        logger.debug('Request headers', { headers: Object.fromEntries(request.headers.entries()) });
                         
                         // For discovery requests (initialize, tools/list), don't require auth
                         if (body.method === 'initialize' || body.method === 'tools/list') {
-                            console.log('Processing discovery request:', body.method);
+                            logger.info('Processing discovery request', { method: body.method });
                             const server = mcp.server;
                             
                             if (body.method === 'initialize') {
@@ -602,8 +605,99 @@ export class MSGraphMCP {
                             }
                         }
                         
+                        // Support streamable-http / LibreChat transport signals
+                        // Some clients use JSON-RPC methods like "notifications/initialized" and "tools/call".
+                        // Handle those explicitly so the transport can connect.
+                        if (body.method === 'notifications/initialized') {
+                            logger.info('Received notifications/initialized from client', { id: body.id, params: body.params });
+                            return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: {} }), { headers: { 'Content-Type': 'application/json' } });
+                        }
+
+                        // Map streamable-http "tools/call" to our tool execution flow.
+                        if (body.method === 'tools/call') {
+                            const callParams = body.params || {};
+                            logger.info('Received tools/call', { callParams });
+
+                            // Flexible extraction of tool name and input payload from different clients
+                            const toolName = callParams.tool || callParams.toolName || callParams.name || callParams.id || (callParams[0] && callParams[0].tool) || undefined;
+                            const input = callParams.input || callParams.args || callParams.params || callParams[0] || {};
+
+                            if (!toolName) {
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32602, message: 'Invalid params: tool name missing in tools/call' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            // Only allow authenticated tool calls (unless tool is discovery-type)
+                            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32002, message: 'Authentication required' } }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            try {
+                                // Route common tool names to existing handlers
+                                if (toolName === 'microsoft-graph-api') {
+                                    const params = input || {};
+                                    // default apiType
+                                    if (!params.apiType) params.apiType = 'graph';
+
+                                    // Validate minimal params (reuse same checks we have later)
+                                    const { apiType, path, method } = params as any;
+                                    if (!path || typeof path !== 'string') {
+                                        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32602, message: 'Invalid params: path is required and must be a string' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+                                    }
+
+                                    if (!method || typeof method !== 'string') {
+                                        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32602, message: 'Invalid params: method is required' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+                                    }
+
+                                    // Delegate to MSGraphService
+                                    if (params.apiType === 'azure') {
+                                        const responseData = await mcp.msGraphServiceInstance.azureRequest(
+                                            params.path,
+                                            params.method as 'get' | 'post' | 'put' | 'patch' | 'delete',
+                                            params.body,
+                                            params.queryParams,
+                                            params.apiVersion,
+                                            params.subscriptionId,
+                                            params.fetchAll
+                                        );
+
+                                        return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(responseData, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                                    }
+
+                                    const responseData = await mcp.msGraphServiceInstance.genericGraphRequest(
+                                        params.path,
+                                        params.method as 'get' | 'post' | 'put' | 'patch' | 'delete',
+                                        params.body,
+                                        params.queryParams,
+                                        (params.graphApiVersion as 'v1.0' | 'beta') || 'v1.0',
+                                        params.fetchAll,
+                                        params.consistencyLevel
+                                    );
+
+                                    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(responseData, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                                }
+
+                                // Support direct mapped MCP tools
+                                if (toolName === 'getCurrentUserProfile') {
+                                    const profile = await mcp.msGraphServiceInstance.getCurrentUserProfile();
+                                    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(profile, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                                }
+
+                                if (toolName === 'getUsers') {
+                                    const users = await mcp.msGraphServiceInstance.getUsers(input.queryParams, input.fetchAll);
+                                    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(users, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                                }
+
+                                // Unknown tool
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32601, message: `Method not found (tool): ${toolName}` } }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+
+                            } catch (err: any) {
+                                logger.error('Error handling tools/call', { message: err instanceof Error ? err.message : String(err), error: err });
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32000, message: err instanceof Error ? err.message : String(err) } }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+                            }
+                        }
+
                         // For tool calls, require authentication
-                            if (!authHeader || !authHeader.startsWith("Bearer ")) {
+                        if (!authHeader || !authHeader.startsWith("Bearer ")) {
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
                                 error: {
@@ -633,12 +727,15 @@ export class MSGraphMCP {
                         try {
                             // Directly handle common tool calls by invoking the MSGraphService methods
                             const params = body.params || {};
+                            logger.debug('Tool call parameters', { params });
 
                             // Expect the client/model to provide structured params per the tool schema (like Lokka).
                             // Default apiType to 'graph' if omitted for backward compatibility.
                             if (!params.apiType) params.apiType = 'graph';
+                            logger.debug('Final apiType after defaulting', { apiType: params.apiType });
 
                             if (body.method === 'microsoft-graph-api') {
+                                logger.info('Executing microsoft-graph-api tool call');
                                 const {
                                     apiType,
                                     path,
@@ -651,6 +748,19 @@ export class MSGraphMCP {
                                     fetchAll,
                                     consistencyLevel
                                 } = params;
+                                
+                                logger.debug('Extracted parameters', {
+                                    apiType,
+                                    path,
+                                    method,
+                                    apiVersion,
+                                    subscriptionId,
+                                    queryParams,
+                                    graphApiVersion,
+                                    fetchAll,
+                                    consistencyLevel,
+                                    hasBody: !!requestBody
+                                });
 
                                 // Validate required parameters
                                 if (!path || typeof path !== 'string') {
@@ -670,6 +780,15 @@ export class MSGraphMCP {
                                 }
 
                                 if (apiType === 'azure') {
+                                    logger.info('Making Azure API call', {
+                                        pathPreview: path ? path.substring(0, 100) + (path.length > 100 ? '...' : '') : 'undefined',
+                                        method,
+                                        apiVersion,
+                                        subscriptionId,
+                                        hasQueryParams: !!queryParams,
+                                        fetchAll
+                                    });
+                                    
                                     if (!apiVersion || typeof apiVersion !== 'string') {
                                         return new Response(JSON.stringify({
                                             jsonrpc: '2.0',
@@ -695,6 +814,15 @@ export class MSGraphMCP {
                                     }), { headers: { 'Content-Type': 'application/json' } });
                                 }
 
+                                logger.info('Making Graph API call', {
+                                    pathPreview: path ? path.substring(0, 100) + (path.length > 100 ? '...' : '') : 'undefined',
+                                    method,
+                                    graphApiVersion: graphApiVersion || 'v1.0',
+                                    hasQueryParams: !!queryParams,
+                                    fetchAll,
+                                    consistencyLevel
+                                });
+
                                 const responseData = await mcp.msGraphServiceInstance.genericGraphRequest(
                                     path,
                                     method as 'get' | 'post' | 'put' | 'patch' | 'delete',
@@ -713,11 +841,13 @@ export class MSGraphMCP {
                             }
 
                             if (body.method === 'getCurrentUserProfile') {
+                                logger.info('Executing getCurrentUserProfile tool call');
                                 const profile = await mcp.msGraphServiceInstance.getCurrentUserProfile();
                                 return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(profile, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
                             }
 
                             if (body.method === 'getUsers') {
+                                logger.info('Executing getUsers tool call', { queryParams: params.queryParams, fetchAll: params.fetchAll });
                                 const { queryParams, fetchAll } = params;
                                 const users = await mcp.msGraphServiceInstance.getUsers(queryParams, fetchAll);
                                 return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(users, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
@@ -764,6 +894,14 @@ export class MSGraphMCP {
                                 error: { code: -32601, message: `Method not found: ${body.method}` }
                             }), { status: 404, headers: { 'Content-Type': 'application/json' } });
                         } catch (err: any) {
+                            logger.error('MCP tool execution error', {
+                                method: body.method,
+                                params: body.params,
+                                error: err instanceof Error ? err.message : String(err),
+                                stack: err instanceof Error ? err.stack : 'No stack trace',
+                                errorType: typeof err,
+                                errorName: err?.name || 'Unknown'
+                            });
                             return new Response(JSON.stringify({
                                 jsonrpc: '2.0',
                                 id: body.id || null,
@@ -771,8 +909,13 @@ export class MSGraphMCP {
                             }), { status: 500, headers: { 'Content-Type': 'application/json' } });
                         }
                         
-                    } catch (error) {
-                        console.error('MCP request processing error:', error);
+                    } catch (error: any) {
+                        logger.error('MCP request processing error', {
+                            error: error instanceof Error ? error.message : String(error),
+                            stack: error instanceof Error ? error.stack : 'No stack trace',
+                            errorType: typeof error,
+                            errorName: error?.name || 'Unknown'
+                        });
                         return new Response(JSON.stringify({
                             jsonrpc: "2.0",
                             error: {
@@ -878,6 +1021,8 @@ export class MSGraphMCP {
                 if (request.method === 'POST') {
                     try {
                         const body: any = await request.json();
+                        logger.info('SSE MCP request received', { method: body.method, id: body.id });
+                        logger.debug('SSE Full MCP request body', { body });
 
                         // For tool calls, require authentication
                         if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -896,6 +1041,7 @@ export class MSGraphMCP {
 
                         // Special-case 'ping' to return empty OK result (no 'content' key)
                         if (body.method === 'ping') {
+                            logger.info('Processing SSE ping request');
                             return new Response(JSON.stringify({
                                 jsonrpc: '2.0',
                                 id: body.id,
@@ -919,7 +1065,13 @@ export class MSGraphMCP {
                             headers: { 'Content-Type': 'application/json' }
                         });
 
-                    } catch (error) {
+                    } catch (error: any) {
+                        logger.error('SSE MCP request error', {
+                            error: error instanceof Error ? error.message : String(error),
+                            stack: error instanceof Error ? error.stack : 'No stack trace',
+                            errorType: typeof error,
+                            errorName: error?.name || 'Unknown'
+                        });
                         return new Response(JSON.stringify({
                             jsonrpc: "2.0",
                             error: {
