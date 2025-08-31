@@ -564,7 +564,7 @@ export class MSGraphMCP {
                                 params: {
                                     protocolVersion: "2024-11-05",
                                     capabilities: {
-                                        tools: {}
+                                        tools: [{ name: "Microsoft Graph", description: "Chat with Microsoft Graph" }]
                                     },
                                     serverInfo: {
                                         name: "Microsoft Graph Service",
