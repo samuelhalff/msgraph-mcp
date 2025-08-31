@@ -133,6 +133,14 @@ app.get('/authorize', async (c) => {
     msGraphAuthUrl.searchParams.set('response_type', response_type || 'code');
     msGraphAuthUrl.searchParams.set('state', state || '');
 
+    // Forward PKCE parameters to Microsoft OAuth
+    if (code_challenge) {
+        msGraphAuthUrl.searchParams.set('code_challenge', code_challenge);
+    }
+    if (code_challenge_method) {
+        msGraphAuthUrl.searchParams.set('code_challenge_method', code_challenge_method);
+    }
+
     return c.redirect(msGraphAuthUrl.toString());
 });
 
@@ -218,13 +226,46 @@ app.post('/logout', (c) => {
 // MCP route
 app.post('/mcp', async (c) => {
     const authHeader = c.req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return c.json({ error: 'Missing or invalid Authorization header' }, 401);
-    }
-
-    const accessToken = authHeader.substring(7);
+    const hasValidAuth = authHeader && authHeader.startsWith('Bearer ');
 
     try {
+        const request = await c.req.json();
+
+        // Allow initialize method without authentication
+        if (request.method === 'initialize') {
+            return c.json({
+                jsonrpc: "2.0",
+                id: request.id,
+                result: {
+                    protocolVersion: "2025-06-18",
+                    capabilities: {
+                        tools: { listChanged: true }
+                    },
+                    serverInfo: {
+                        name: "Microsoft Graph Service",
+                        version: "1.0.0"
+                    }
+                }
+            });
+        }
+
+        // Require authentication for all other methods
+        if (!hasValidAuth) {
+            return c.json({
+                jsonrpc: "2.0",
+                id: request.id,
+                error: {
+                    code: -32002,
+                    message: "Authentication required",
+                    data: {
+                        oauth_url: `${c.req.url.split('/mcp')[0]}/.well-known/oauth-authorization-server`
+                    }
+                }
+            }, 401);
+        }
+
+        const accessToken = authHeader.substring(7);
+
         const authContext = {
             accessToken: accessToken,
             refreshToken: c.req.header('X-Refresh-Token') || undefined
@@ -250,26 +291,9 @@ app.post('/mcp', async (c) => {
         await mcp.initialize();
 
         const server = mcp.server;
-        const request = await c.req.json();
 
         // Handle MCP protocol messages properly
-        if (request.method === 'initialize') {
-            // Handle initialization
-            return c.json({
-                jsonrpc: "2.0",
-                id: request.id,
-                result: {
-                    protocolVersion: "2025-06-18",
-                    capabilities: {
-                        tools: { listChanged: true }
-                    },
-                    serverInfo: {
-                        name: "Microsoft Graph Service",
-                        version: "1.0.0"
-                    }
-                }
-            });
-        } else if (request.method === 'tools/list') {
+        if (request.method === 'tools/list') {
             // Return available tools
             return c.json({
                 jsonrpc: "2.0",
