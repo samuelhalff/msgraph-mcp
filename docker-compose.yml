@@ -2,7 +2,12 @@ version: '3.8'
 
 services:
   msgraph-mcp:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Enable BuildKit for faster builds
+      args:
+        BUILDKIT_INLINE_CACHE: 1
     container_name: msgraph-mcp
     ports:
       - "3001:3001"
