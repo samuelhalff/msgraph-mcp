@@ -1,53 +1,229 @@
-# Spotify MCP OAuth Server
+# Microsoft Graph MCP Server
 
-This is a fork of [Stytch's MCP Consumer TODO List](https://github.com/stytchauth/mcp-stytch-consumer-todo-list) example, adapted to demonstrate Spotify OAuth 2.0 integration with Model Context Protocol (MCP) using Cloudflare Workers.
+A Model Context Protocol (MCP) server that provides Microsoft Graph API integration for LibreChat and other MCP-compatible applications.
 
-## Why This Fork?
+## Features
 
-The original Stytch example provided an excellent foundation for implementing OAuth discovery and Dynamic Client Registration for MCP servers. We forked this project to:
+- 🔐 **OAuth 2.0 Authentication** - Secure authentication with Microsoft Graph
+- 📧 **Email Operations** - Send, read, and manage emails
+- 👥 **User Management** - Access user profiles and directory information
+- 📅 **Calendar Integration** - Manage events and schedules
+- 📁 **OneDrive Integration** - File storage and sharing
+- 👥 **Teams Integration** - Microsoft Teams functionality
+- 🏢 **Administrative APIs** - Organization and tenant management
 
-1. **Leverage the OAuth Discovery Pattern**: The original implementation showed how to create OAuth discovery endpoints that work with MCP Inspector
-2. **Replace Stytch with Spotify**: Demonstrate how to integrate with a third-party OAuth provider (Spotify) that doesn't natively support Dynamic Client Registration
-3. **Focus on the API Layer**: While the original included a full TODO app with frontend components, this fork focuses primarily on the MCP server implementation
+## Quick Start
 
-## What's Changed
+### 1. Clone and Install
 
-### API Layer Updates
-- **New Files Added**:
-  - `api/SpotifyMCP.ts` - MCP server implementation for Spotify Web API
-  - `api/SpotifyService.ts` - Service layer for Spotify API interactions
-  - `api/lib/spotify-auth.ts` - OAuth flow implementation for Spotify
-  
-- **Modified Files**:
-  - `api/index.ts` - Updated to handle Spotify OAuth flow and MCP endpoints
-  - Environment variables changed from Stytch to Spotify credentials
+```bash
+git clone <repository-url>
+cd msgraph-mcp
+npm install
+```
 
-### Key Features
+### 2. Microsoft Graph App Registration
 
-This implementation provides:
-- **OAuth 2.0 Authorization Code Flow** with PKCE support
-- **OAuth Discovery Endpoint** at `/.well-known/oauth-authorization-server`
-- **Dynamic Client Registration** for MCP Inspector compatibility
-- **Automatic Token Refresh** when access tokens expire
-- **Full Spotify Web API Integration** via MCP tools
-- **Cloudflare Durable Objects** for MCP server state management
+1. Go to [Azure Portal](https://portal.azure.com)
+2. Navigate to **App registrations** → **New registration**
+3. Configure:
+   - Name: `LibreChat MS Graph MCP`
+   - Supported account types: `Accounts in any organizational directory`
+   - Redirect URI: `http://localhost:3001/auth/callback`
 
-## Architecture
+4. Note down:
+   - **Application (client) ID**
+   - **Directory (tenant) ID**
 
-The project uses:
-- **Cloudflare Workers** for the backend API
-- **Cloudflare Durable Objects** for MCP server instances
-- **Spotify Web API** for music data and playback control
-- **Model Context Protocol (MCP)** for AI agent integration
+5. Create a **Client Secret**:
+   - Go to **Certificates & secrets**
+   - **New client secret**
+   - Note down the **Value** (not the Secret ID)
 
-## Important: Development Example
+6. Configure **API Permissions**:
+   - **Microsoft Graph** → **Delegated permissions**
+   - Add: `https://graph.microsoft.com/.default`
 
-**⚠️ This server is primarily designed for development and testing OAuth flows with MCP clients.**
+### 3. Environment Configuration
 
-This implementation is optimized for:
-- Testing with [LibreChat](https://github.com/danny-avila/LibreChat) - An open-source AI chat platform with MCP support
-- Development with [MCP Inspector](https://github.com/modelcontextprotocol/inspector) - Official MCP debugging tool
-- Learning how to implement OAuth discovery for MCP servers
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your values:
+```env
+TENANT_ID=your-tenant-id
+CLIENT_ID=your-client-id
+CLIENT_SECRET=your-client-secret
+REDIRECT_URI=http://localhost:3001/auth/callback
+OAUTH_SCOPES=https://graph.microsoft.com/.default
+```
+
+### 4. Start the Server
+
+```bash
+# Development mode
+npm run dev
+
+# Production mode
+npm run build
+npm start
+```
+
+The server will start on `http://localhost:3001`
+
+### 5. Configure LibreChat
+
+Add to your `librechat.yaml`:
+
+```yaml
+mcpServers:
+  msgraph:
+    type: streamable-http
+    url: http://localhost:3001/mcp
+    requiresOAuth: true
+    env:
+      TENANT_ID: "your-tenant-id"
+      CLIENT_ID: "your-client-id"
+      CLIENT_SECRET: "your-client-secret"
+      REDIRECT_URI: "http://localhost:3001/auth/callback"
+      SCOPE: "https://graph.microsoft.com/.default"
+```
+
+## Docker Deployment
+
+### Option 1: Standalone Docker
+
+```bash
+# Build and run
+docker build -t msgraph-mcp .
+docker run -p 3001:3001 --env-file .env msgraph-mcp
+```
+
+### Option 2: Docker Compose (with LibreChat)
+
+```bash
+# Copy docker-compose.yml to your LibreChat directory
+cp docker-compose.yml /path/to/librechat/
+
+# Start both services
+docker-compose up -d
+```
+
+## API Endpoints
+
+- `GET /.well-known/oauth-authorization-server` - OAuth discovery
+- `POST /register` - Client registration
+- `GET /authorize` - Authorization redirect
+- `POST /token` - Token exchange
+- `GET /userinfo` - User information
+- `POST /logout` - Logout
+- `POST /mcp` - MCP protocol endpoint
+- `GET /health` - Health check
+
+## Available Tools
+
+The MCP server provides these tools to LibreChat:
+
+### Core Tools
+- `microsoft-graph-api` - Versatile Microsoft Graph API access
+- `get-auth-status` - Check authentication status
+
+### Microsoft Graph Tools
+- `getUsers` - List users
+- `getGroups` - List groups
+- `getApplications` - List applications
+- `getCurrentUserProfile` - Get current user profile
+- `sendMail` - Send emails
+- `getMessages` - Read emails
+- `createEvent` - Create calendar events
+- `getEvents` - List calendar events
+- `getDriveItems` - Access OneDrive files
+- `getTeams` - List Microsoft Teams
+- `getChannels` - List team channels
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Development server with hot reload
+npm run dev
+
+# Build for production
+npm run build
+
+# Run production server
+npm start
+
+# Run linting
+npm run lint
+```
+
+## Configuration Options
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `TENANT_ID` | Azure tenant ID | Required |
+| `CLIENT_ID` | Azure app client ID | Required |
+| `CLIENT_SECRET` | Azure app client secret | Required |
+| `REDIRECT_URI` | OAuth redirect URI | Required |
+| `OAUTH_SCOPES` | Microsoft Graph scopes | `https://graph.microsoft.com/.default` |
+| `USE_GRAPH_BETA` | Use Graph beta endpoint | `false` |
+| `USE_CLIENT_TOKEN` | Use client-provided tokens | `true` |
+| `PORT` | Server port | `3001` |
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"Invalid client" error**
+   - Check your CLIENT_ID and CLIENT_SECRET
+   - Ensure the app registration has correct permissions
+
+2. **"Invalid scope" error**
+   - Verify OAUTH_SCOPES includes required permissions
+   - Check app registration API permissions
+
+3. **Connection refused**
+   - Ensure the server is running on the correct port
+   - Check firewall settings
+
+### Logs
+
+```bash
+# View server logs
+docker logs msgraph-mcp
+
+# View LibreChat logs
+docker logs librechat
+```
+
+## Security Notes
+
+- Store secrets securely (use Docker secrets or environment variables)
+- Use HTTPS in production
+- Regularly rotate client secrets
+- Limit API permissions to only what's needed
+
+## License
+
+MIT License - see LICENSE file for details.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests
+5. Submit a pull request
+
+## Support
+
+- 📖 [Documentation](https://www.librechat.ai/docs)
+- 🐛 [Issues](https://github.com/samuelhalff/msgraph-mcp/issues)
+- 💬 [Discussions](https://github.com/samuelhalff/msgraph-mcp/discussions)
 
 ### Not Production-Ready
 

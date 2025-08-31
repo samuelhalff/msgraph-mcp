@@ -1,8 +1,23 @@
-// Environment variables and bindings
-interface Env {
-    SPOTIFY_CLIENT_ID: string
-    SPOTIFY_CLIENT_SECRET: string
-    SPOTIFY_MCP_OBJECT: DurableObjectNamespace
+// Environment variables and bindings for Node.js
+export interface Env {
+    // Microsoft Graph / Azure configuration
+    TENANT_ID?: string
+    CLIENT_ID?: string
+    CLIENT_SECRET?: string
+    ACCESS_TOKEN?: string
+    REDIRECT_URI?: string
+    CERTIFICATE_PATH?: string
+    CERTIFICATE_PASSWORD?: string
+    MS_GRAPH_CLIENT_ID?: string
+    OAUTH_SCOPES?: string
+    USE_GRAPH_BETA?: string
+    USE_INTERACTIVE?: string
+    USE_CLIENT_TOKEN?: string
+    USE_CERTIFICATE?: string
+
+    // Legacy Spotify (for backward compatibility)
+    SPOTIFY_CLIENT_ID?: string
+    SPOTIFY_CLIENT_SECRET?: string
 }
 
 export type Todo = {
@@ -28,10 +43,10 @@ type AuthenticationContext = {
     accessToken: string
 }
 
-// Context from the Spotify OAuth process
-export type SpotifyAuthContext = {
+// Context from the Microsoft Graph OAuth process
+export type MSGraphAuthContext = {
     accessToken: string
-    refreshToken: string
+    refreshToken?: string
     expiresIn?: number
     tokenType?: string
     scope?: string
