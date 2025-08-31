@@ -463,7 +463,7 @@ export class MSGraphMCP {
                         }
                         
                         // For tool calls, require authentication
-                        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                            if (!authHeader || !authHeader.startsWith("Bearer ")) {
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
                                 error: {
@@ -479,15 +479,37 @@ export class MSGraphMCP {
                         
                         // Handle tool calls using the MCP server
                         const server = mcp.server;
-                        // This would need proper MCP protocol handling for tool calls
-                        // For now, return a placeholder
-                        return new Response(JSON.stringify({
-                            jsonrpc: "2.0",
-                            id: body.id,
-                            result: { content: [{ type: "text", text: "Tool execution not yet implemented" }] }
-                        }), {
-                            headers: { 'Content-Type': 'application/json' }
-                        });
+                            // Special-case 'ping' to return an empty OK result (no 'content' key)
+                            if (body.method === 'ping') {
+                                return new Response(
+                                    JSON.stringify({
+                                        jsonrpc: '2.0',
+                                        id: body.id,
+                                        result: {},
+                                    }),
+                                    { headers: { 'Content-Type': 'application/json' } }
+                                );
+                            }
+
+                            // This would need proper MCP protocol handling for tool calls
+                            // For now, return a placeholder tool response using the standard 'content' shape
+                            return new Response(
+                                JSON.stringify({
+                                    jsonrpc: '2.0',
+                                    id: body.id,
+                                    result: {
+                                        content: [
+                                            {
+                                                type: 'text',
+                                                text: 'Tool execution not yet implemented',
+                                            },
+                                        ],
+                                    },
+                                }),
+                                {
+                                    headers: { 'Content-Type': 'application/json' },
+                                }
+                            );
                         
                     } catch (error) {
                         console.error('MCP request processing error:', error);
@@ -610,6 +632,15 @@ export class MSGraphMCP {
                                 status: 401,
                                 headers: { 'Content-Type': 'application/json' }
                             });
+                        }
+
+                        // Special-case 'ping' to return empty OK result (no 'content' key)
+                        if (body.method === 'ping') {
+                            return new Response(JSON.stringify({
+                                jsonrpc: '2.0',
+                                id: body.id,
+                                result: {},
+                            }), { headers: { 'Content-Type': 'application/json' } });
                         }
 
                         // Handle tool calls using the MCP server
