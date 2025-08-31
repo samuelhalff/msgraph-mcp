@@ -14,10 +14,6 @@ export interface Env {
     USE_INTERACTIVE?: string
     USE_CLIENT_TOKEN?: string
     USE_CERTIFICATE?: string
-
-    // Legacy Spotify (for backward compatibility)
-    SPOTIFY_CLIENT_ID?: string
-    SPOTIFY_CLIENT_SECRET?: string
 }
 
 export type Todo = {

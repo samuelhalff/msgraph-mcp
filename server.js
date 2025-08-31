@@ -252,19 +252,124 @@ app.post('/mcp', async (c) => {
         const server = mcp.server;
         const request = await c.req.json();
 
+        // Handle MCP protocol messages properly
+        if (request.method === 'initialize') {
+            // Handle initialization
+            return c.json({
+                jsonrpc: "2.0",
+                id: request.id,
+                result: {
+                    protocolVersion: "2025-06-18",
+                    capabilities: {
+                        tools: { listChanged: true }
+                    },
+                    serverInfo: {
+                        name: "Microsoft Graph Service",
+                        version: "1.0.0"
+                    }
+                }
+            });
+        } else if (request.method === 'tools/list') {
+            // Return available tools
+            return c.json({
+                jsonrpc: "2.0",
+                id: request.id,
+                result: {
+                    tools: [
+                        {
+                            name: "microsoft-graph-api",
+                            description: "A versatile tool to interact with Microsoft APIs including Microsoft Graph (Entra) and Azure Resource Management",
+                            inputSchema: {
+                                type: "object",
+                                properties: {
+                                    apiType: { type: "string", enum: ["graph", "azure"] },
+                                    path: { type: "string" },
+                                    method: { type: "string", enum: ["get", "post", "put", "patch", "delete"] },
+                                    apiVersion: { type: "string" },
+                                    subscriptionId: { type: "string" },
+                                    queryParams: { type: "object" },
+                                    body: { type: "object" },
+                                    graphApiVersion: { type: "string", enum: ["v1.0", "beta"] },
+                                    fetchAll: { type: "boolean" },
+                                    consistencyLevel: { type: "string" }
+                                },
+                                required: ["apiType", "path", "method"]
+                            }
+                        },
+                        {
+                            name: "get-auth-status",
+                            description: "Check the current authentication status",
+                            inputSchema: {
+                                type: "object",
+                                properties: {}
+                            }
+                        }
+                    ]
+                }
+            });
+        } else if (request.method === 'tools/call') {
+            // Handle tool calls by delegating to the MCP server
+            const { name, arguments: args } = request.params;
+
+            try {
+                let result;
+                if (name === 'microsoft-graph-api') {
+                    result = await mcp.msGraphServiceInstance.genericGraphRequest(
+                        args.path,
+                        args.method,
+                        args.body,
+                        args.queryParams,
+                        args.graphApiVersion || 'v1.0',
+                        args.fetchAll || false,
+                        args.consistencyLevel
+                    );
+                } else if (name === 'get-auth-status') {
+                    result = { status: 'authenticated', user: 'current-user' };
+                } else {
+                    throw new Error(`Unknown tool: ${name}`);
+                }
+
+                return c.json({
+                    jsonrpc: "2.0",
+                    id: request.id,
+                    result: {
+                        content: [{
+                            type: "text",
+                            text: JSON.stringify(result, null, 2)
+                        }]
+                    }
+                });
+            } catch (error) {
+                return c.json({
+                    jsonrpc: "2.0",
+                    id: request.id,
+                    error: {
+                        code: -32000,
+                        message: error.message || 'Tool execution failed'
+                    }
+                });
+            }
+        }
+
+        // Default response for unhandled methods
         return c.json({
             jsonrpc: "2.0",
-            id: request.id || 1,
-            result: {
-                tools: [
-                    { name: "microsoft-graph-api", description: "A versatile tool to interact with Microsoft Graph APIs" },
-                    { name: "get-auth-status", description: "Check the current authentication status" }
-                ]
+            id: request.id,
+            error: {
+                code: -32601,
+                message: `Method not found: ${request.method}`
             }
         });
+
     } catch (error) {
         console.error('MCP request error:', error);
-        return c.json({ error: 'Internal server error' }, 500);
+        return c.json({
+            jsonrpc: "2.0",
+            error: {
+                code: -32000,
+                message: 'Internal server error'
+            }
+        }, 500);
     }
 });
 
