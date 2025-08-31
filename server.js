@@ -58,7 +58,9 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
         id_token_signing_alg_values_supported: ['RS256'],
         userinfo_endpoint: `${baseUrl}/userinfo`,
         end_session_endpoint: `${baseUrl}/logout`,
-        registration_endpoint: `${baseUrl}/register`
+        registration_endpoint: `${baseUrl}/register`,
+        // Add PKCE support for LibreChat compatibility
+        code_challenge_methods_supported: ['S256', 'plain']
     });
 });
 
@@ -102,7 +104,7 @@ app.post('/register', async (c) => {
 
 // Authorization endpoint
 app.get('/authorize', async (c) => {
-    const { client_id, redirect_uri, scope, state, response_type } = c.req.query();
+    const { client_id, redirect_uri, scope, state, response_type, code_challenge, code_challenge_method } = c.req.query();
 
     if (!client_id || !redirect_uri) {
         return c.json({ error: 'Missing required parameters: client_id, redirect_uri' }, 400);
@@ -115,6 +117,13 @@ app.get('/authorize', async (c) => {
 
     if (!client.redirect_uris.includes(redirect_uri)) {
         return c.json({ error: 'Invalid redirect_uri' }, 400);
+    }
+
+    // Store PKCE parameters for this client if provided
+    if (code_challenge && code_challenge_method) {
+        client.code_challenge = code_challenge;
+        client.code_challenge_method = code_challenge_method;
+        registeredClients.set(client_id, client);
     }
 
     const msGraphAuthUrl = new URL(getMSGraphAuthEndpoint('authorize'));
@@ -137,10 +146,41 @@ app.post('/token', async (c) => {
         const client_id = body.client_id;
         const client_secret = body.client_secret;
         const refresh_token = body.refresh_token;
+        const code_verifier = body.code_verifier;
 
         if (grant_type === 'authorization_code') {
             if (!code || !redirect_uri || !client_id) {
                 return c.json({ error: 'Missing required parameters' }, 400);
+            }
+
+            // Validate PKCE if code_verifier is provided
+            if (code_verifier) {
+                const client = registeredClients.get(client_id);
+                if (client && client.code_challenge && client.code_challenge_method) {
+                    // Validate PKCE challenge
+                    const crypto = await import('crypto');
+                    let expectedChallenge;
+
+                    if (client.code_challenge_method === 'S256') {
+                        // Create SHA256 hash of code_verifier
+                        const hash = crypto.createHash('sha256');
+                        hash.update(code_verifier);
+                        expectedChallenge = hash.digest('base64url');
+                    } else if (client.code_challenge_method === 'plain') {
+                        expectedChallenge = code_verifier;
+                    } else {
+                        return c.json({ error: 'Unsupported code challenge method' }, 400);
+                    }
+
+                    if (expectedChallenge !== client.code_challenge) {
+                        return c.json({ error: 'Invalid code verifier' }, 400);
+                    }
+
+                    // Clear PKCE data after successful validation
+                    delete client.code_challenge;
+                    delete client.code_challenge_method;
+                    registeredClients.set(client_id, client);
+                }
             }
 
             const tokenResponse = await exchangeCodeForToken(code, redirect_uri, process.env.CLIENT_ID || '', process.env.CLIENT_SECRET || '');
