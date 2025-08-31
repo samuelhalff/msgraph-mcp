@@ -119,38 +119,34 @@ app.post("/register", async (c) => {
       );
     }
 
-    const client_id = process.env.CLIENT_ID;
-    
-    if (!client_id) {
-      return c.json({ error: "Missing client_id" }, 400);
-    }
+    // Generate a dynamic client id for the registering client (public client)
+    const client_id = crypto.randomUUID();
 
     const client: RegisteredClient = {
       client_id,
-      client_name: registration.client_name,
+      client_name: registration.client_name || "MCP Client",
       redirect_uris: Array.isArray(registration.redirect_uris)
         ? registration.redirect_uris
         : [registration.redirect_uris],
       grant_types: registration.grant_types || ["authorization_code"],
       response_types: registration.response_types || ["code"],
       scope: registration.scope || "https://graph.microsoft.com/.default",
-      token_endpoint_auth_method:
-        registration.token_endpoint_auth_method || "client_secret_post",
+      token_endpoint_auth_method: registration.token_endpoint_auth_method || "none",
       created_at: Date.now(),
+      azure_client_id: process.env.CLIENT_ID, // map to server's Azure app by default
     };
 
     registeredClients.set(client_id, client);
 
+    // Return registration details for a public client (no client_secret)
     return c.json({
       client_id: client.client_id,
-      client_secret: "msgraph-mcp-secret", // In production, generate a real secret
       client_id_issued_at: client.created_at,
-      client_secret_expires_at: 0, // Never expires
+      client_secret_expires_at: 0,
       redirect_uris: client.redirect_uris,
       grant_types: client.grant_types,
       response_types: client.response_types,
       scope: client.scope,
-      azure_client_id: client.azure_client_id,
       token_endpoint_auth_method: client.token_endpoint_auth_method,
     });
   } catch (error) {
@@ -183,30 +179,23 @@ app.get("/authorize", async (c) => {
     return c.json({ error: "Invalid redirect_uri" }, 400);
   }
 
-  // Redirect to Microsoft Graph authorization endpoint
+  // Redirect to Microsoft Graph authorization endpoint using the mapped azure app id
   const msGraphAuthUrl = new URL(getMSGraphAuthEndpoint("authorize"));
-  // Use the Azure client id associated with this logical client when available.
-  const azureClientIdToUse = process.env.CLIENT_ID;
+  const azureClientIdToUse = client.azure_client_id || process.env.CLIENT_ID;
 
-    if (!azureClientIdToUse) {
+  if (!azureClientIdToUse) {
     return c.json({ error: "Missing Microsoft Client ID" }, 400);
   }
-  // If the incoming client_id looks like a local generated id (prefix msgraph-mcp-) do not send it to Azure.
-  if (String(client_id).startsWith("msgraph-mcp-")) {
-    logger.info("Using mapped Azure client id for authorization redirect", {
-      mappedClientId: azureClientIdToUse,
-      localClientId: client_id,
-    });
-  }
-  msGraphAuthUrl.searchParams.set("client_id", azureClientIdToUse);
-  msGraphAuthUrl.searchParams.set("redirect_uri", redirect_uri as string);
-  msGraphAuthUrl.searchParams.set(
-    "scope",
-    scope || client.scope || "https://graph.microsoft.com/.default"
-  );
-  msGraphAuthUrl.searchParams.set("response_type", response_type || "code");
-  msGraphAuthUrl.searchParams.set("state", state || "");
 
+  // Copy all parameters except client_id (we set the mapped Azure client id)
+  const incoming = c.req.query();
+  Object.keys(incoming).forEach((k) => {
+    if (k !== "client_id") {
+      msGraphAuthUrl.searchParams.set(k, String((incoming as any)[k]));
+    }
+  });
+
+  msGraphAuthUrl.searchParams.set("client_id", azureClientIdToUse);
   return c.redirect(msGraphAuthUrl.toString());
 });
 
