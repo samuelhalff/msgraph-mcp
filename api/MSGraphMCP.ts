@@ -620,7 +620,7 @@ export class MSGraphMCP {
 
                             // Flexible extraction of tool name and input payload from different clients
                             const toolName = callParams.tool || callParams.toolName || callParams.name || callParams.id || (callParams[0] && callParams[0].tool) || undefined;
-                            const input = callParams.input || callParams.args || callParams.params || callParams[0] || {};
+                            const input = callParams.input || callParams.args || callParams.params || callParams.arguments || callParams[0] || {};
 
                             if (!toolName) {
                                 return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32602, message: 'Invalid params: tool name missing in tools/call' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
