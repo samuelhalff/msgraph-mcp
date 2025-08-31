@@ -233,6 +233,10 @@ export class MSGraphService {
         fetchAll: boolean = false,
         consistencyLevel?: string
     ): Promise<any> {
+        if (!path || typeof path !== 'string') {
+            throw new Error('Path is required and must be a string for Graph API queries');
+        }
+        
         const effectiveVersion = graphApiVersion || (this.useGraphBeta ? 'beta' : 'v1.0')
         
         try {
@@ -441,6 +445,9 @@ export class MSGraphService {
         fetchAll: boolean = false,
         consistencyLevel?: string
     ): Promise<any> {
+        if (!path || typeof path !== 'string') {
+            throw new Error('Path is required and must be a string for Graph API queries');
+        }
         return this.makeGraphRequest(path, method, body, queryParams, graphApiVersion, fetchAll, consistencyLevel)
     }
 
@@ -465,6 +472,10 @@ export class MSGraphService {
 
     if (!apiVersion) {
       throw new Error('API version is required for Azure Resource Management queries');
+    }
+
+    if (!path || typeof path !== 'string') {
+      throw new Error('Path is required and must be a string for Azure Resource Management queries');
     }
 
     const tokenResponse = await azureCredential.getToken('https://management.azure.com/.default');
