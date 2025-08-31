@@ -64,12 +64,16 @@ export async function exchangeCodeForToken(
         code,
         redirect_uri: redirectUri,
         client_id: clientId,
-        client_secret: clientSecret,
     })
 
     // Add code_verifier for PKCE flow if provided
     if (codeVerifier) {
         params.append('code_verifier', codeVerifier)
+    }
+
+    // Only include client_secret when provided (confidential clients). Public clients must not send client_secret.
+    if (clientSecret) {
+        params.append('client_secret', clientSecret)
     }
 
     const response = await fetch(getMSGraphAuthEndpoint('token'), {
@@ -108,17 +112,21 @@ export async function refreshAccessToken(
     expires_in: number
     refresh_token?: string
 }> {
+    const params = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+    })
+    if (clientSecret) {
+        params.append('client_secret', clientSecret)
+    }
+
     const response = await fetch(getMSGraphAuthEndpoint('token'), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: refreshToken,
-            client_id: clientId,
-            client_secret: clientSecret,
-        })
+        body: params
     })
 
     if (!response.ok) {

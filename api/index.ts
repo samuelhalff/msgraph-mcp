@@ -76,8 +76,9 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     token_endpoint_auth_methods_supported: [
-      "client_secret_basic",
-      "client_secret_post",
+  "client_secret_basic",
+  "client_secret_post",
+  "none",
     ],
     scopes_supported: [
       "openid",
