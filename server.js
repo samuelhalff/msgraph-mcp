@@ -403,23 +403,94 @@ app.post('/logout', (c) => {
 
 // MCP route
 app.post('/mcp', async (c) => {
+    // Read the incoming MCP request body early so we can handle unauthenticated 'initialize' and 'tools/list' calls
+    let request;
+    try {
+        request = await c.req.json();
+    } catch (err) {
+        logger.warn('Failed to parse MCP request body', { error: err?.message });
+        return c.json({ error: 'Invalid MCP request' }, 400);
+    }
+
     const authHeader = c.req.header('Authorization');
-    
+
     logger.info('MCP endpoint accessed', {
         ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
         userAgent: c.req.header('user-agent'),
         hasAuth: !!authHeader,
-        contentType: c.req.header('content-type')
+        contentType: c.req.header('content-type'),
+        method: request?.method
     });
-    
+
+    // Allow unauthenticated clients to call 'initialize' and 'tools/list' so they can discover capabilities/tools
+    if ((!authHeader || !authHeader.startsWith('Bearer ')) && request && (request.method === 'initialize' || request.method === 'tools/list')) {
+        logger.info('Serving unauthenticated MCP discovery request', { method: request.method });
+
+        if (request.method === 'initialize') {
+            return c.json({
+                jsonrpc: "2.0",
+                id: request.id,
+                result: {
+                    protocolVersion: "2025-06-18",
+                    capabilities: {
+                        tools: { listChanged: true }
+                    },
+                    serverInfo: {
+                        name: "Microsoft Graph Service",
+                        version: "1.0.0"
+                    }
+                }
+            });
+        }
+
+        if (request.method === 'tools/list') {
+            return c.json({
+                jsonrpc: "2.0",
+                id: request.id,
+                result: {
+                    tools: [
+                        {
+                            name: "microsoft-graph-api",
+                            description: "A versatile tool to interact with Microsoft APIs including Microsoft Graph (Entra) and Azure Resource Management",
+                            inputSchema: {
+                                type: "object",
+                                properties: {
+                                    apiType: { type: "string", enum: ["graph", "azure"] },
+                                    path: { type: "string" },
+                                    method: { type: "string", enum: ["get", "post", "put", "patch", "delete"] },
+                                    apiVersion: { type: "string" },
+                                    subscriptionId: { type: "string" },
+                                    queryParams: { type: "object" },
+                                    body: { type: "object" },
+                                    graphApiVersion: { type: "string", enum: ["v1.0", "beta"] },
+                                    fetchAll: { type: "boolean" },
+                                    consistencyLevel: { type: "string" }
+                                },
+                                required: ["apiType", "path", "method"]
+                            }
+                        },
+                        {
+                            name: "get-auth-status",
+                            description: "Check the current authentication status",
+                            inputSchema: {
+                                type: "object",
+                                properties: {}
+                            }
+                        }
+                    ]
+                }
+            });
+        }
+    }
+
+    // If we reach here and the request is unauthenticated, return the OAuth-specific error for protected operations
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         logger.warn('MCP request rejected: missing or invalid authorization', {
             ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
             hasAuth: !!authHeader,
             authType: authHeader ? authHeader.split(' ')[0] : 'none'
         });
-        
-        // Return OAuth-specific error for MCP clients
+
         const baseUrl = c.req.url.split('/mcp')[0];
         return c.json({
             jsonrpc: "2.0",
