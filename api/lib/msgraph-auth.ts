@@ -1,5 +1,6 @@
 import {createMiddleware} from "hono/factory";
 import {HTTPException} from "hono/http-exception";
+import { Env } from "../../types";
 
 /**
  * spotifyBearerTokenAuthMiddleware validates that the request has a valid Spotify access token
@@ -31,17 +32,21 @@ export const spotifyBearerTokenAuthMiddleware = createMiddleware<{
 })
 
 /**
- * Get Spotify OAuth endpoints
+ * Get Microsoft Graph OAuth endpoints
  */
-export function getSpotifyAuthEndpoint(endpoint: string): string {
-    return `https://accounts.spotify.com/${endpoint}`
+export function getMSGraphAuthEndpoint(endpoint: string): string {
+    const endpoints = {
+        authorize: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+        token: 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+    };
+    return endpoints[endpoint as keyof typeof endpoints] || endpoints.authorize;
 }
 
 /**
  * Exchange authorization code for access token
  */
 export async function exchangeCodeForToken(
-    code: string, 
+    code: string,
     redirectUri: string,
     clientId: string,
     clientSecret: string,
@@ -57,18 +62,19 @@ export async function exchangeCodeForToken(
         grant_type: 'authorization_code',
         code,
         redirect_uri: redirectUri,
+        client_id: clientId,
+        client_secret: clientSecret,
     })
 
-    // Add code_verifier for PKCE flow
+    // Add code_verifier for PKCE flow if provided
     if (codeVerifier) {
         params.append('code_verifier', codeVerifier)
     }
 
-    const response = await fetch(getSpotifyAuthEndpoint('api/token'), {
+    const response = await fetch(getMSGraphAuthEndpoint('token'), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${btoa(`${clientId}:${clientSecret}`)}`
         },
         body: params
     })
@@ -78,7 +84,13 @@ export async function exchangeCodeForToken(
         throw new Error(`Failed to exchange code for token: ${error}`)
     }
 
-    return response.json()
+    return response.json() as Promise<{
+        access_token: string;
+        token_type: string;
+        scope: string;
+        expires_in: number;
+        refresh_token: string;
+    }>
 }
 
 /**
@@ -95,15 +107,16 @@ export async function refreshAccessToken(
     expires_in: number
     refresh_token?: string
 }> {
-    const response = await fetch(getSpotifyAuthEndpoint('api/token'), {
+    const response = await fetch(getMSGraphAuthEndpoint('token'), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${btoa(`${clientId}:${clientSecret}`)}`
         },
         body: new URLSearchParams({
             grant_type: 'refresh_token',
-            refresh_token: refreshToken
+            refresh_token: refreshToken,
+            client_id: clientId,
+            client_secret: clientSecret,
         })
     })
 
@@ -112,5 +125,11 @@ export async function refreshAccessToken(
         throw new Error(`Failed to refresh token: ${error}`)
     }
 
-    return response.json()
+    return response.json() as Promise<{
+        access_token: string;
+        token_type: string;
+        scope: string;
+        expires_in: number;
+        refresh_token?: string;
+    }>
 } 

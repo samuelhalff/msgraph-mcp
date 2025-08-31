@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  msgraph-mcp:
+    build: .
+    container_name: msgraph-mcp
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - TENANT_ID=${TENANT_ID}
+      - CLIENT_ID=${CLIENT_ID}
+      - CLIENT_SECRET=${CLIENT_SECRET}
+      - REDIRECT_URI=${REDIRECT_URI}
+      - OAUTH_SCOPES=https://graph.microsoft.com/.default
+      - USE_CLIENT_TOKEN=true
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - msgraph-network
+
+networks:
+  msgraph-network:
+    driver: bridge
