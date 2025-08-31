@@ -228,11 +228,22 @@ app.post("/token", async (c) => {
       }
 
       // Exchange code for token
+      // Find registered client so we can determine token endpoint auth method and mapped azure client id
+      const regClient = registeredClients.get(client_id);
+      const azureClientIdToUse = regClient?.azure_client_id || process.env.CLIENT_ID || "";
+      const tokenAuthMethod = regClient?.token_endpoint_auth_method || "client_secret_post";
+
+      // Only provide client secret when the registered client expects confidential auth
+      const secretToSend = tokenAuthMethod === "none" ? undefined : process.env.CLIENT_SECRET || undefined;
+      logger.info(`/token exchanging code for client_id=${client_id} token_endpoint_auth_method=${tokenAuthMethod} sendingClientSecret=${Boolean(secretToSend)}`);
+
       const tokenResponse = await exchangeCodeForToken(
         code,
         redirect_uri,
-        process.env.CLIENT_ID || "",
-        process.env.CLIENT_SECRET || ""
+        azureClientIdToUse,
+        secretToSend || "",
+        // if client supplied PKCE verifier, forward it
+        body.code_verifier as string | undefined
       );
       return c.json(tokenResponse);
     } else if (grant_type === "refresh_token") {
@@ -241,10 +252,16 @@ app.post("/token", async (c) => {
       }
 
       // Refresh token
+      const regClient = registeredClients.get(body.client_id as string);
+      const azureClientIdToUse = regClient?.azure_client_id || process.env.CLIENT_ID || "";
+      const tokenAuthMethod = regClient?.token_endpoint_auth_method || "client_secret_post";
+      const secretToSend = tokenAuthMethod === "none" ? undefined : process.env.CLIENT_SECRET || undefined;
+      logger.info(`/token refresh for client_id=${body.client_id} token_endpoint_auth_method=${tokenAuthMethod} sendingClientSecret=${Boolean(secretToSend)}`);
+
       const tokenResponse = await refreshAccessToken(
         refresh_token,
-        process.env.CLIENT_ID || "",
-        process.env.CLIENT_SECRET || ""
+        azureClientIdToUse,
+        secretToSend || ""
       );
       return c.json(tokenResponse);
     } else {
