@@ -308,10 +308,43 @@ export class MSGraphMCP {
                 // Handle MCP protocol messages using the SDK
                 if (request.method === 'POST') {
                     try {
-                        const body: any = await request.json();
+                        const bodyText = await request.text();
+                        if (!bodyText.trim()) {
+                            return new Response(JSON.stringify({
+                                jsonrpc: "2.0",
+                                error: {
+                                    code: -32700,
+                                    message: "Parse error: empty request body"
+                                },
+                                id: null
+                            }), {
+                                status: 400,
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                        }
+                        
+                        let body: any;
+                        try {
+                            body = JSON.parse(bodyText);
+                        } catch (parseError) {
+                            return new Response(JSON.stringify({
+                                jsonrpc: "2.0",
+                                error: {
+                                    code: -32700,
+                                    message: "Parse error: invalid JSON"
+                                },
+                                id: null
+                            }), {
+                                status: 400,
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                        }
+                        
+                        console.log('MCP request received:', { method: body.method, id: body.id });
                         
                         // For discovery requests (initialize, tools/list), don't require auth
                         if (body.method === 'initialize' || body.method === 'tools/list') {
+                            console.log('Processing discovery request:', body.method);
                             const server = mcp.server;
                             
                             if (body.method === 'initialize') {
@@ -457,11 +490,12 @@ export class MSGraphMCP {
                         });
                         
                     } catch (error) {
+                        console.error('MCP request processing error:', error);
                         return new Response(JSON.stringify({
                             jsonrpc: "2.0",
                             error: {
                                 code: -32603,
-                                message: "Internal error"
+                                message: `Internal error: ${error instanceof Error ? error.message : 'Unknown error'}`
                             },
                             id: null
                         }), {
