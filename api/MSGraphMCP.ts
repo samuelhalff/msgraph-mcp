@@ -305,18 +305,170 @@ export class MSGraphMCP {
                 const mcp = new MSGraphMCP(env, authContext);
                 await mcp.initialize();
 
-                // Create a simple HTTP handler for the MCP server
+                // Handle MCP protocol messages using the SDK
                 if (request.method === 'POST') {
-                    // Handle MCP protocol messages
-                    const body: any = await request.json();
-                    // This is a simplified implementation - in practice you'd need proper MCP protocol handling
-                    return new Response(JSON.stringify({ 
-                        jsonrpc: "2.0", 
-                        id: body.id,
-                        result: { tools: [] } // Simplified - would need proper tool listing
-                    }), {
-                        headers: { 'Content-Type': 'application/json' }
-                    });
+                    try {
+                        const body: any = await request.json();
+                        
+                        // For discovery requests (initialize, tools/list), don't require auth
+                        if (body.method === 'initialize' || body.method === 'tools/list') {
+                            const server = mcp.server;
+                            
+                            if (body.method === 'initialize') {
+                                // Return server capabilities
+                                return new Response(JSON.stringify({
+                                    jsonrpc: "2.0",
+                                    id: body.id,
+                                    result: {
+                                        protocolVersion: "2024-11-05",
+                                        capabilities: {
+                                            tools: {}
+                                        },
+                                        serverInfo: {
+                                            name: "Microsoft Graph Service",
+                                            version: "1.0.0"
+                                        }
+                                    }
+                                }), {
+                                    headers: { 'Content-Type': 'application/json' }
+                                });
+                            } else if (body.method === 'tools/list') {
+                                // Return list of available tools
+                                const tools = [
+                                    {
+                                        name: "microsoft-graph-api",
+                                        description: "A versatile tool to interact with Microsoft APIs including Microsoft Graph (Entra) and Azure Resource Management",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                apiType: { type: "string", enum: ["graph", "azure"] },
+                                                path: { type: "string" },
+                                                method: { type: "string", enum: ["get", "post", "put", "patch", "delete"] },
+                                                apiVersion: { type: "string" },
+                                                subscriptionId: { type: "string" },
+                                                queryParams: { type: "object" },
+                                                body: { type: "object" },
+                                                graphApiVersion: { type: "string", enum: ["v1.0", "beta"] },
+                                                fetchAll: { type: "boolean" },
+                                                consistencyLevel: { type: "string" }
+                                            },
+                                            required: ["apiType", "path", "method"]
+                                        }
+                                    },
+                                    {
+                                        name: "set-access-token",
+                                        description: "Set or update the access token for Microsoft Graph authentication",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                accessToken: { type: "string" },
+                                                refreshToken: { type: "string" },
+                                                expiresOn: { type: "string" }
+                                            },
+                                            required: ["accessToken"]
+                                        }
+                                    },
+                                    {
+                                        name: "get-auth-status",
+                                        description: "Check the current authentication status and mode of the MCP Server",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {}
+                                        }
+                                    },
+                                    {
+                                        name: "getCurrentUserProfile",
+                                        description: "Get the current user's Microsoft Graph profile",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {}
+                                        }
+                                    },
+                                    {
+                                        name: "getUsers",
+                                        description: "Get users from Microsoft Graph",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                queryParams: { type: "object" },
+                                                fetchAll: { type: "boolean" }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        name: "getGroups",
+                                        description: "Get groups from Microsoft Graph",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                queryParams: { type: "object" },
+                                                fetchAll: { type: "boolean" }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        name: "getApplications",
+                                        description: "Get applications from Microsoft Graph",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                queryParams: { type: "object" },
+                                                fetchAll: { type: "boolean" }
+                                            }
+                                        }
+                                    }
+                                ];
+                                
+                                return new Response(JSON.stringify({
+                                    jsonrpc: "2.0",
+                                    id: body.id,
+                                    result: { tools }
+                                }), {
+                                    headers: { 'Content-Type': 'application/json' }
+                                });
+                            }
+                        }
+                        
+                        // For tool calls, require authentication
+                        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                            return new Response(JSON.stringify({
+                                jsonrpc: "2.0",
+                                error: {
+                                    code: -32002,
+                                    message: "Authentication required"
+                                },
+                                id: body.id
+                            }), {
+                                status: 401,
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                        }
+                        
+                        // Handle tool calls using the MCP server
+                        const server = mcp.server;
+                        // This would need proper MCP protocol handling for tool calls
+                        // For now, return a placeholder
+                        return new Response(JSON.stringify({
+                            jsonrpc: "2.0",
+                            id: body.id,
+                            result: { content: [{ type: "text", text: "Tool execution not yet implemented" }] }
+                        }), {
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                        
+                    } catch (error) {
+                        return new Response(JSON.stringify({
+                            jsonrpc: "2.0",
+                            error: {
+                                code: -32603,
+                                message: "Internal error"
+                            },
+                            id: null
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
                 }
 
                 return new Response('MCP Server Running', { status: 200 });
@@ -326,9 +478,134 @@ export class MSGraphMCP {
 
     static serveSSE(path: string, options?: any) {
         return {
-            fetch: async (request: Request, env: Env) => {
-                // Similar to serve but for SSE
-                return new Response('SSE Not Implemented', { status: 501 });
+            fetch: async (request: Request) => {
+                // Extract auth context from request headers
+                const authHeader = request.headers.get('Authorization');
+                let authContext: MSGraphAuthContext = { accessToken: '' };
+
+                if (authHeader && authHeader.startsWith('Bearer ')) {
+                    authContext = {
+                        accessToken: authHeader.substring(7),
+                        refreshToken: request.headers.get('X-Refresh-Token') || undefined
+                    };
+                }
+
+                // Create env object from process.env
+                const env: Env = {
+                    TENANT_ID: process.env.TENANT_ID,
+                    CLIENT_ID: process.env.CLIENT_ID,
+                    CLIENT_SECRET: process.env.CLIENT_SECRET,
+                    ACCESS_TOKEN: process.env.ACCESS_TOKEN,
+                    REDIRECT_URI: process.env.REDIRECT_URI,
+                    CERTIFICATE_PATH: process.env.CERTIFICATE_PATH,
+                    CERTIFICATE_PASSWORD: process.env.CERTIFICATE_PASSWORD,
+                    MS_GRAPH_CLIENT_ID: process.env.MS_GRAPH_CLIENT_ID,
+                    OAUTH_SCOPES: process.env.OAUTH_SCOPES,
+                    USE_GRAPH_BETA: process.env.USE_GRAPH_BETA,
+                    USE_INTERACTIVE: process.env.USE_INTERACTIVE,
+                    USE_CLIENT_TOKEN: process.env.USE_CLIENT_TOKEN,
+                    USE_CERTIFICATE: process.env.USE_CERTIFICATE,
+                };
+
+                const mcp = new MSGraphMCP(env, authContext);
+                await mcp.initialize();
+
+                // Handle SSE connection
+                if (request.method === 'GET') {
+                    // Set up SSE headers
+                    const headers = new Headers({
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive',
+                        'Access-Control-Allow-Origin': '*',
+                        'Access-Control-Allow-Headers': 'Cache-Control',
+                    });
+
+                    const stream = new ReadableStream({
+                        start(controller) {
+                            // Send initial connection message
+                            const initialMessage = {
+                                jsonrpc: "2.0",
+                                method: "connection/ready",
+                                params: {
+                                    protocolVersion: "2024-11-05",
+                                    capabilities: {
+                                        tools: {}
+                                    },
+                                    serverInfo: {
+                                        name: "Microsoft Graph Service",
+                                        version: "1.0.0"
+                                    }
+                                }
+                            };
+
+                            controller.enqueue(`data: ${JSON.stringify(initialMessage)}\n\n`);
+
+                            // Handle incoming messages (this would need proper MCP protocol handling)
+                            // For now, keep the connection alive
+                            const keepAlive = setInterval(() => {
+                                controller.enqueue(': keepalive\n\n');
+                            }, 30000);
+
+                            // Clean up on close
+                            request.signal.addEventListener('abort', () => {
+                                clearInterval(keepAlive);
+                                controller.close();
+                            });
+                        }
+                    });
+
+                    return new Response(stream, { headers });
+                }
+
+                // Handle POST requests for tool calls over SSE
+                if (request.method === 'POST') {
+                    try {
+                        const body: any = await request.json();
+
+                        // For tool calls, require authentication
+                        if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                            return new Response(JSON.stringify({
+                                jsonrpc: "2.0",
+                                error: {
+                                    code: -32002,
+                                    message: "Authentication required"
+                                },
+                                id: body.id
+                            }), {
+                                status: 401,
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                        }
+
+                        // Handle tool calls using the MCP server
+                        const server = mcp.server;
+                        // This would need proper MCP protocol handling for tool calls
+                        // For now, return a placeholder
+                        return new Response(JSON.stringify({
+                            jsonrpc: "2.0",
+                            id: body.id,
+                            result: { content: [{ type: "text", text: "Tool execution over SSE not yet implemented" }] }
+                        }), {
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+
+                    } catch (error) {
+                        return new Response(JSON.stringify({
+                            jsonrpc: "2.0",
+                            error: {
+                                code: -32603,
+                                message: "Internal error"
+                            },
+                            id: null
+                        }), {
+                            status: 500,
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                    }
+                }
+
+                return new Response('SSE Endpoint', { status: 200 });
             }
         };
     }
