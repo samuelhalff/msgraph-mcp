@@ -1,20 +1,18 @@
-# Dependencies
+# Dependencies - NEVER copy these
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Build outputs
+# Build outputs - These are built inside container
 dist/
 .next/
 out/
+build/
 
-# Environment files
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# Environment files - Loaded at runtime
+.env*
+!.env.example
 
 # IDE and editor files
 .vscode/
@@ -32,54 +30,76 @@ out/
 ehthumbs.db
 Thumbs.db
 
-# Git
+# Git - NEVER copy
 .git/
 .gitignore
+.github/
 
-# Docker
+# Docker - NEVER copy
 Dockerfile*
 docker-compose*.yml
 .dockerignore
 
-# Documentation
+# Documentation - Not needed in container
 README.md
 *.md
+docs/
 
-# Logs
+# Logs - Not needed in container
 logs/
 *.log
 
-# Runtime data
+# Runtime data - Not needed in container
 pids/
 *.pid
 *.seed
 *.pid.lock
 
-# Coverage directory used by tools like istanbul
+# Coverage - Not needed in container
 coverage/
+.nyc_output/
 
-# Dependency directories
+# Dependency directories - NEVER copy
 jspm_packages/
 
-# Optional npm cache directory
+# Optional npm cache - NEVER copy
 .npm
 
-# Optional REPL history
+# Optional REPL history - Not needed
 .node_repl_history
 
-# Output of 'npm pack'
+# Output of 'npm pack' - Not needed
 *.tgz
 
-# Yarn Integrity file
+# Yarn Integrity file - Not needed
 .yarn-integrity
 
-# dotenv environment variables file
+# dotenv environment variables file - Loaded at runtime
 .env
 
-# IDE files
+# IDE files - NEVER copy
 .vscode/
 .idea/
 
-# Temporary files
+# Temporary files - NEVER copy
 *.tmp
 *.temp
+.cache/
+.parcel-cache/
+
+# Test files - Not needed in production
+**/*.test.js
+**/*.test.ts
+**/*.spec.js
+**/*.spec.ts
+__tests__/
+test/
+
+# Source maps - Not needed in production
+*.map
+
+# TypeScript cache - Not needed
+*.tsbuildinfo
+
+# ESLint cache - Not needed
+.eslintcache

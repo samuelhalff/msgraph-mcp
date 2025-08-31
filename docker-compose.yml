@@ -5,9 +5,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # Enable BuildKit for faster builds
+      # Enable BuildKit optimizations
       args:
         BUILDKIT_INLINE_CACHE: 1
+      # Additional build options for speed
+      options:
+        - BUILDKIT_PROGRESS=plain
     container_name: msgraph-mcp
     ports:
       - "3001:3001"
@@ -19,6 +22,7 @@ services:
       - REDIRECT_URI=${REDIRECT_URI}
       - OAUTH_SCOPES=https://graph.microsoft.com/.default
       - USE_CLIENT_TOKEN=true
+      - NODE_ENV=production
     env_file:
       - .env
     volumes:
