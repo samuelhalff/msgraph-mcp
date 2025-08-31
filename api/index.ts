@@ -185,10 +185,11 @@ app.get("/authorize", async (c) => {
   // Redirect to Microsoft Graph authorization endpoint
   const msGraphAuthUrl = new URL(getMSGraphAuthEndpoint("authorize"));
   // Use the Azure client id associated with this logical client when available.
-  const azureClientIdToUse =
-    client && client.azure_client_id
-      ? client.azure_client_id
-      : process.env.CLIENT_ID || "";
+  const azureClientIdToUse = process.env.CLIENT_ID;
+
+    if (!azureClientIdToUse) {
+    return c.json({ error: "Missing Microsoft Client ID" }, 400);
+  }
   // If the incoming client_id looks like a local generated id (prefix msgraph-mcp-) do not send it to Azure.
   if (String(client_id).startsWith("msgraph-mcp-")) {
     logger.info("Using mapped Azure client id for authorization redirect", {
@@ -271,72 +272,12 @@ app.post("/logout", (c) => {
   return c.json({ message: "Logged out successfully" });
 });
 
-// MCP route - receives bearer token from LibreChat
-app.post("/mcp", async (c) => {
-  logger.info(`/mcp endpoint hit, ${JSON.stringify(c.req.query())}`);
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return c.json({ error: "Missing or invalid Authorization header" }, 401);
-  }
+// MCP route - simplified to use MCP SDK's built-in discovery handling
+app.route('/mcp', new Hono().mount('/', MSGraphMCP.serve('/mcp', { binding: 'MSGRAPH_MCP_OBJECT' }).fetch))
 
-  const accessToken = authHeader.substring(7); // Remove 'Bearer ' prefix
-
-  try {
-    // Create auth context for MSGraphMCP
-    const authContext: MSGraphAuthContext = {
-      accessToken: accessToken,
-      refreshToken: c.req.header("X-Refresh-Token") || undefined,
-    };
-
-    // Create MSGraphMCP instance with the provided token
-    const env = {
-      TENANT_ID: process.env.TENANT_ID,
-      CLIENT_ID: process.env.CLIENT_ID,
-      CLIENT_SECRET: process.env.CLIENT_SECRET,
-      ACCESS_TOKEN: process.env.ACCESS_TOKEN,
-      REDIRECT_URI: process.env.REDIRECT_URI,
-      CERTIFICATE_PATH: process.env.CERTIFICATE_PATH,
-      CERTIFICATE_PASSWORD: process.env.CERTIFICATE_PASSWORD,
-      MS_GRAPH_CLIENT_ID: process.env.MS_GRAPH_CLIENT_ID,
-      OAUTH_SCOPES: process.env.OAUTH_SCOPES,
-      USE_GRAPH_BETA: process.env.USE_GRAPH_BETA,
-      USE_INTERACTIVE: process.env.USE_INTERACTIVE,
-      USE_CLIENT_TOKEN: process.env.USE_CLIENT_TOKEN,
-      USE_CERTIFICATE: process.env.USE_CERTIFICATE,
-    };
-
-    const mcp = new MSGraphMCP(env as any, authContext);
-    await mcp.initialize();
-
-    // Get the MCP server instance
-    const server = mcp.server;
-
-    // Handle MCP request using the server's tool calling
-    const request = await c.req.json();
-
-    // For now, return a simple response - this would need proper MCP protocol handling
-    return c.json({
-      jsonrpc: "2.0",
-      id: request.id || 1,
-      result: {
-        tools: [
-          {
-            name: "microsoft-graph-api",
-            description:
-              "A versatile tool to interact with Microsoft Graph APIs",
-          },
-          {
-            name: "get-auth-status",
-            description: "Check the current authentication status",
-          },
-        ],
-      },
-    });
-  } catch (error) {
-    logger.error("MCP request error:", error);
-    return c.json({ error: "Internal server error" }, 500);
-  }
-});
+// SSE route for streaming connections
+app.use('/sse/*', msGraphBearerTokenAuthMiddleware)
+app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE('/sse', { binding: 'MSGRAPH_MCP_OBJECT' }).fetch))
 
 // Health check endpoint
 app.get("/health", (c) => {
