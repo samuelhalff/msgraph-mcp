@@ -44,6 +44,8 @@ interface RegisteredClient {
     scope?: string;
     token_endpoint_auth_method: string;
     created_at: number;
+    // Optional Azure AD application client id to use when redirecting to Microsoft
+    azure_client_id?: string;
 }
 const registeredClients = new Map<string, RegisteredClient>();
 
@@ -87,7 +89,7 @@ app.post('/register', async (c) => {
             return c.json({ error: 'Missing required fields: client_name, redirect_uris' }, 400);
         }
 
-        // Generate client_id
+        // Generate client_id - Option 1: Timestamp + random (current)
         const client_id = `msgraph-mcp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
         const client: RegisteredClient = {
@@ -98,6 +100,9 @@ app.post('/register', async (c) => {
             response_types: registration.response_types || ['code'],
             scope: registration.scope || 'https://graph.microsoft.com/.default',
             token_endpoint_auth_method: registration.token_endpoint_auth_method || 'client_secret_post',
+            // Allow caller to provide an optional Azure AD client id that this logical client maps to.
+            // If not provided, fall back to the server-wide CLIENT_ID environment variable.
+            azure_client_id: registration.azure_client_id || process.env.CLIENT_ID,
             created_at: Date.now()
         };
 
@@ -112,6 +117,7 @@ app.post('/register', async (c) => {
             grant_types: client.grant_types,
             response_types: client.response_types,
             scope: client.scope,
+            azure_client_id: client.azure_client_id,
             token_endpoint_auth_method: client.token_endpoint_auth_method
         });
     } catch (error) {
@@ -142,7 +148,13 @@ app.get('/authorize', async (c) => {
 
     // Redirect to Microsoft Graph authorization endpoint
     const msGraphAuthUrl = new URL(getMSGraphAuthEndpoint('authorize'));
-    msGraphAuthUrl.searchParams.set('client_id', process.env.CLIENT_ID || '');
+    // Use the Azure client id associated with this logical client when available.
+    const azureClientIdToUse = (client && client.azure_client_id) ? client.azure_client_id : (process.env.CLIENT_ID || '');
+    // If the incoming client_id looks like a local generated id (prefix msgraph-mcp-) do not send it to Azure.
+    if (String(client_id).startsWith('msgraph-mcp-')) {
+        logger.info('Using mapped Azure client id for authorization redirect', { mappedClientId: azureClientIdToUse, localClientId: client_id });
+    }
+    msGraphAuthUrl.searchParams.set('client_id', azureClientIdToUse);
     msGraphAuthUrl.searchParams.set('redirect_uri', redirect_uri as string);
     msGraphAuthUrl.searchParams.set('scope', scope || client.scope || 'https://graph.microsoft.com/.default');
     msGraphAuthUrl.searchParams.set('response_type', response_type || 'code');
