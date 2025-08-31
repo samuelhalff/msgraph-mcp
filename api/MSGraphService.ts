@@ -18,6 +18,7 @@ export class AuthManager {
   }-explicit-any */
 import { Client, PageIterator, PageCollection } from "@microsoft/microsoft-graph-client";
 import { InteractiveBrowserCredential, ClientSecretCredential, ClientCertificateCredential } from "@azure/identity";
+import logger from "./lib/logger.js";
 import { Env } from "../types";
 
 // Note: In Cloudflare Workers, fetch is already available globally
@@ -283,7 +284,7 @@ export class MSGraphService {
             if (error.statusCode === 401 || error.code === 'InvalidAuthenticationToken' || 
                 (error.message && error.message.includes('401'))) {
                 
-                console.log('Received 401 error, attempting to refresh token...')
+                logger.info('Received 401 error, attempting to refresh token...')
                 
                 try {
                     // Try to refresh the token
@@ -341,7 +342,7 @@ export class MSGraphService {
                             throw new Error(`Unsupported method: ${method}`)
                     }
                 } catch (refreshError) {
-                    console.error('Failed to refresh token:', refreshError)
+                    logger.error('Failed to refresh token:', refreshError)
                     throw new Error(`Authentication failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`)
                 }
             }

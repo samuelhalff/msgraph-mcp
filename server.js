@@ -4,9 +4,34 @@ import { cors } from "hono/cors";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import dotenv from "dotenv";
+import winston from "winston";
 
 // Load environment variables
 dotenv.config();
+
+// Create logger instance
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  defaultMeta: { service: 'msgraph-mcp' },
+  transports: [
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' }),
+  ],
+});
+
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new winston.transports.Console({
+    format: winston.format.combine(
+      winston.format.colorize(),
+      winston.format.simple()
+    )
+  }));
+}
 
 // Export the MSGraphMCP class
 export { MSGraphMCP };
@@ -97,7 +122,7 @@ app.post('/register', async (c) => {
             token_endpoint_auth_method: client.token_endpoint_auth_method
         });
     } catch (error) {
-        console.error('Client registration error:', error);
+        logger.error('Client registration error:', error);
         return c.json({ error: 'Invalid registration request' }, 400);
     }
 });
@@ -132,6 +157,14 @@ app.get('/authorize', async (c) => {
     msGraphAuthUrl.searchParams.set('scope', scope || client.scope || 'https://graph.microsoft.com/.default');
     msGraphAuthUrl.searchParams.set('response_type', response_type || 'code');
     msGraphAuthUrl.searchParams.set('state', state || '');
+
+    // Forward PKCE parameters to Microsoft OAuth
+    if (code_challenge) {
+        msGraphAuthUrl.searchParams.set('code_challenge', code_challenge);
+    }
+    if (code_challenge_method) {
+        msGraphAuthUrl.searchParams.set('code_challenge_method', code_challenge_method);
+    }
 
     return c.redirect(msGraphAuthUrl.toString());
 });
@@ -196,7 +229,7 @@ app.post('/token', async (c) => {
             return c.json({ error: 'Unsupported grant_type' }, 400);
         }
     } catch (error) {
-        console.error('Token exchange error:', error);
+        logger.error('Token exchange error:', error);
         return c.json({ error: 'Token exchange failed' }, 500);
     }
 });
@@ -219,7 +252,18 @@ app.post('/logout', (c) => {
 app.post('/mcp', async (c) => {
     const authHeader = c.req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return c.json({ error: 'Missing or invalid Authorization header' }, 401);
+        // Return OAuth-specific error for MCP clients
+        const baseUrl = c.req.url.split('/mcp')[0];
+        return c.json({
+            jsonrpc: "2.0",
+            error: {
+                code: -32002,
+                message: "Authentication required",
+                data: {
+                    oauth_url: `${baseUrl}/.well-known/oauth-authorization-server`
+                }
+            }
+        }, 401);
     }
 
     const accessToken = authHeader.substring(7);
@@ -362,7 +406,7 @@ app.post('/mcp', async (c) => {
         });
 
     } catch (error) {
-        console.error('MCP request error:', error);
+        logger.error('MCP request error:', error);
         return c.json({
             jsonrpc: "2.0",
             error: {
@@ -380,9 +424,10 @@ app.get('/health', (c) => {
 
 // Start the server
 const port = process.env.PORT || 3001;
-console.log(`🚀 Starting Microsoft Graph MCP Server on port ${port}`);
+logger.info(`🚀 Starting Microsoft Graph MCP Server on port ${port}`);
 
 serve({
     fetch: app.fetch,
     port: Number(port),
 });
+

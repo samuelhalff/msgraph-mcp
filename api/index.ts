@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { MSGraphAuthContext, Env } from "../types";
 import dotenv from "dotenv";
+import logger from "./lib/logger.js";
 
 // Load environment variables
 dotenv.config();
@@ -55,6 +56,7 @@ app.use('*', cors({
     credentials: true
 }));
 app.get('/.well-known/oauth-authorization-server', (c) => {
+    logger.info(`/.well-known/oauth-authorization-server endpoint hit, ${JSON.stringify(c.req.query())}`);
     const baseUrl = c.req.url.split('/.well-known')[0];
     return c.json({
         issuer: baseUrl,
@@ -75,6 +77,7 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
 
 // Client registration endpoint
 app.post('/register', async (c) => {
+    logger.info(`/register endpoint hit, ${JSON.stringify(c.req.json())}`);
     try {
         const registration = await c.req.json();
 
@@ -111,13 +114,14 @@ app.post('/register', async (c) => {
             token_endpoint_auth_method: client.token_endpoint_auth_method
         });
     } catch (error) {
-        console.error('Client registration error:', error);
+        logger.error('Client registration error:', error);
         return c.json({ error: 'Invalid registration request' }, 400);
     }
 });
 
 // Authorization endpoint
 app.get('/authorize', async (c) => {
+    logger.info(`/authorize endpoint hit, ${JSON.stringify(c.req.query())}`);
     const { client_id, redirect_uri, scope, state, response_type } = c.req.query();
 
     if (!client_id || !redirect_uri) {
@@ -148,6 +152,7 @@ app.get('/authorize', async (c) => {
 
 // Token endpoint
 app.post('/token', async (c) => {
+    logger.info(`/token endpoint hit, ${JSON.stringify(c.req.query())}`);
     try {
         const body = await c.req.parseBody();
         const grant_type = body.grant_type as string;
@@ -177,13 +182,14 @@ app.post('/token', async (c) => {
             return c.json({ error: 'Unsupported grant_type' }, 400);
         }
     } catch (error) {
-        console.error('Token exchange error:', error);
+        logger.error('Token exchange error:', error);
         return c.json({ error: 'Token exchange failed' }, 500);
     }
 });
 
 // User info endpoint
 app.get('/userinfo', msGraphBearerTokenAuthMiddleware, async (c) => {
+    logger.info(`/userinfo endpoint hit, ${JSON.stringify(c.req.query())}`);
     // This would typically fetch user info from Microsoft Graph
     return c.json({
         sub: 'user-id',
@@ -200,6 +206,7 @@ app.post('/logout', (c) => {
 
 // MCP route - receives bearer token from LibreChat
 app.post('/mcp', async (c) => {
+    logger.info(`/mcp endpoint hit, ${JSON.stringify(c.req.query())}`);
     const authHeader = c.req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return c.json({ error: 'Missing or invalid Authorization header' }, 401);
@@ -258,13 +265,14 @@ app.post('/mcp', async (c) => {
             }
         });
     } catch (error) {
-        console.error('MCP request error:', error);
+        logger.error('MCP request error:', error);
         return c.json({ error: 'Internal server error' }, 500);
     }
 });
 
 // Health check endpoint
 app.get('/health', (c) => {
+    logger.info(`/health endpoint hit, ${JSON.stringify(c.req.query())}`);
     return c.json({ status: 'ok', service: 'msgraph-mcp' });
 });
 
@@ -273,7 +281,7 @@ export default app;
 // Start the server if this file is run directly
 if (import.meta.url === `file://${process.argv[1]}`) {
     const port = process.env.PORT || 3001;
-    console.log(`🚀 Starting Microsoft Graph MCP Server on port ${port}`);
+    logger.info(`🚀 Starting Microsoft Graph MCP Server on port ${port}`);
 
     serve({
         fetch: app.fetch,
