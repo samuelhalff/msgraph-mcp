@@ -9,22 +9,39 @@ const logger = winston.createLogger({
     winston.format.json()
   ),
   defaultMeta: { service: 'msgraph-mcp' },
-  transports: [
-    // Write all logs with importance level of `error` or less to `error.log`
-    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-    // Write all logs with importance level of `info` or less to `combined.log`
-    new winston.transports.File({ filename: 'logs/combined.log' }),
-  ],
+  transports: [],
+  exceptionHandlers: [],
+  rejectionHandlers: [],
 });
 
-// If we're not in production then log to the console with a simple format
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: winston.format.combine(
-      winston.format.colorize(),
-      winston.format.simple()
-    )
+// Add file transports with error handling
+try {
+  // Write all logs with importance level of `error` or less to `error.log`
+  logger.add(new winston.transports.File({
+    filename: 'logs/error.log',
+    level: 'error',
+    handleExceptions: true,
+    handleRejections: true
   }));
+
+  // Write all logs with importance level of `info` or less to `combined.log`
+  logger.add(new winston.transports.File({
+    filename: 'logs/combined.log',
+    handleExceptions: true,
+    handleRejections: true
+  }));
+} catch (error) {
+  console.warn('Failed to initialize file logging, falling back to console only:', error instanceof Error ? error.message : String(error));
 }
+
+// Always add console transport
+logger.add(new winston.transports.Console({
+  format: winston.format.combine(
+    winston.format.colorize(),
+    winston.format.simple()
+  ),
+  handleExceptions: true,
+  handleRejections: true
+}));
 
 export default logger;

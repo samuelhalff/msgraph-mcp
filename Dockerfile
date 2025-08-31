@@ -38,6 +38,9 @@ RUN npm ci --only=production && npm cache clean --force
 COPY --from=builder --chown=mcp:nodejs /app/dist ./dist
 COPY --from=builder --chown=mcp:nodejs /app/server.js ./
 
+# Create logs directory with proper ownership
+RUN mkdir -p logs && chown -R mcp:nodejs logs
+
 # Switch to non-root user
 USER mcp
 
