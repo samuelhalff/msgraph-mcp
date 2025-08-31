@@ -211,20 +211,23 @@ app.post("/token", async (c) => {
     const client_secret = body.client_secret as string;
     const refresh_token = body.refresh_token as string;
 
+  logger.info(`/token called with grant_type=${grant_type}, client_id=${client_id}, redirect_uri=${redirect_uri}`);
+
     if (grant_type === "authorization_code") {
       if (!code || !redirect_uri || !client_id) {
         return c.json({ error: "Missing required parameters" }, 400);
       }
 
       // Exchange code for token
-      // Find registered client so we can determine token endpoint auth method and mapped azure client id
-      const regClient = registeredClients.get(client_id);
+  // Find registered client so we can determine token endpoint auth method and mapped azure client id
+  const regClient = registeredClients.get(client_id);
+  logger.info(`/token: regClient lookup for client_id=${client_id} => ${regClient ? 'found' : 'not found'}`);
       const azureClientIdToUse = regClient?.azure_client_id || process.env.CLIENT_ID || "";
       const tokenAuthMethod = regClient?.token_endpoint_auth_method || "client_secret_post";
 
       // Only provide client secret when the registered client expects confidential auth
       const secretToSend = tokenAuthMethod === "none" ? undefined : process.env.CLIENT_SECRET || undefined;
-      logger.info(`/token exchanging code for client_id=${client_id} token_endpoint_auth_method=${tokenAuthMethod} sendingClientSecret=${Boolean(secretToSend)}`);
+  logger.info(`/token exchanging code for client_id=${client_id} mappedAzureClient=${azureClientIdToUse} token_endpoint_auth_method=${tokenAuthMethod} willSendClientSecret=${Boolean(secretToSend)}`);
 
       const tokenResponse = await exchangeCodeForToken(
         code,
@@ -245,7 +248,7 @@ app.post("/token", async (c) => {
       const azureClientIdToUse = regClient?.azure_client_id || process.env.CLIENT_ID || "";
       const tokenAuthMethod = regClient?.token_endpoint_auth_method || "client_secret_post";
       const secretToSend = tokenAuthMethod === "none" ? undefined : process.env.CLIENT_SECRET || undefined;
-      logger.info(`/token refresh for client_id=${body.client_id} token_endpoint_auth_method=${tokenAuthMethod} sendingClientSecret=${Boolean(secretToSend)}`);
+  logger.info(`/token refresh for client_id=${body.client_id} mappedAzureClient=${azureClientIdToUse} token_endpoint_auth_method=${tokenAuthMethod} willSendClientSecret=${Boolean(secretToSend)}`);
 
       const tokenResponse = await refreshAccessToken(
         refresh_token,
