@@ -85,7 +85,7 @@ export class MSGraphMCP {
             "microsoft-graph-api",
             "A versatile tool to interact with Microsoft APIs including Microsoft Graph (Entra) and Azure Resource Management. IMPORTANT: For Graph API GET requests using advanced query parameters ($filter, $count, $search, $orderby), you are ADVISED to set 'consistencyLevel: \"eventual\"'.",
             {
-                apiType: z.enum(["graph", "azure"]).describe("Type of Microsoft API to query. Options: 'graph' for Microsoft Graph (Entra) or 'azure' for Azure Resource Management."),
+                apiType: z.enum(["graph", "azure"]).optional().default("graph").describe("Type of Microsoft API to query. Options: 'graph' for Microsoft Graph (Entra) or 'azure' for Azure Resource Management. Defaults to 'graph'."),
                 path: z.string().describe("The Azure or Graph API URL path to call (e.g. '/users', '/groups', '/subscriptions')"),
                 method: z.enum(["get", "post", "put", "patch", "delete"]).describe("HTTP method to use"),
                 apiVersion: z.string().optional().describe("Azure Resource Management API version (required for apiType Azure)"),
@@ -267,6 +267,43 @@ export class MSGraphMCP {
             return this.formatResponse('Applications retrieved', apps)
         })
 
+        // Create an Outlook draft (POST /me/messages)
+        server.tool('createDraftEmail', 'Create an email draft in Outlook (saved to Drafts)', {
+            subject: z.string().optional().describe('Subject of the email'),
+            body: z.string().optional().describe('Plain text body of the email'),
+            contentType: z.enum(['Text', 'HTML']).optional().default('Text').describe('The content type of the body'),
+            toRecipients: z.array(z.string()).optional().describe('Array of recipient email addresses'),
+            ccRecipients: z.array(z.string()).optional().describe('Array of CC recipient email addresses'),
+            bccRecipients: z.array(z.string()).optional().describe('Array of BCC recipient email addresses')
+        }, async ({ subject, body, contentType, toRecipients, ccRecipients, bccRecipients }) => {
+            try {
+                const message: any = {
+                    subject: subject || '',
+                    body: { contentType: contentType || 'Text', content: body || '' },
+                    toRecipients: (toRecipients || []).map((addr: string) => ({ emailAddress: { address: addr } })),
+                    ccRecipients: (ccRecipients || []).map((addr: string) => ({ emailAddress: { address: addr } })),
+                    bccRecipients: (bccRecipients || []).map((addr: string) => ({ emailAddress: { address: addr } }))
+                };
+
+                const response = await this.msGraphServiceInstance.genericGraphRequest(
+                    '/me/messages',
+                    'post',
+                    message,
+                    undefined,
+                    'v1.0',
+                    false,
+                    undefined
+                );
+
+                return this.formatResponse('Draft created', response);
+            } catch (err: any) {
+                return {
+                    content: [{ type: 'text', text: `Error creating draft: ${err instanceof Error ? err.message : String(err)}` }],
+                    isError: true
+                };
+            }
+        })
+
         return server
     }
 
@@ -386,7 +423,110 @@ export class MSGraphMCP {
                                                 consistencyLevel: { type: "string" }
                                             },
                                             required: ["apiType", "path", "method"]
-                                        }
+                                        },
+                                        examples: [
+                                            {
+                                                description: 'Get current user profile',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: '/me',
+                                                    method: 'get',
+                                                    graphApiVersion: 'v1.0'
+                                                }
+                                            },
+                                            {
+                                                description: 'List inbox messages (Graph)',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: '/me/messages',
+                                                    method: 'get',
+                                                    graphApiVersion: 'v1.0',
+                                                    fetchAll: true
+                                                }
+                                            },
+                                            {
+                                                description: 'Send an email (Graph)',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: '/me/sendMail',
+                                                    method: 'post',
+                                                    body: {
+                                                        message: {
+                                                            subject: 'Hello',
+                                                            body: { contentType: 'Text', content: 'Hi there' },
+                                                            toRecipients: [{ emailAddress: { address: 'recipient@example.com' } }]
+                                                        },
+                                                        saveToSentItems: true
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                description: 'List users (directory)',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: '/users',
+                                                    method: 'get',
+                                                    graphApiVersion: 'v1.0',
+                                                    fetchAll: true
+                                                }
+                                            },
+                                            {
+                                                description: 'List groups',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: '/groups',
+                                                    method: 'get',
+                                                    graphApiVersion: 'v1.0',
+                                                    fetchAll: true
+                                                }
+                                            },
+                                            {
+                                                description: 'Create calendar event',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: '/me/events',
+                                                    method: 'post',
+                                                    graphApiVersion: 'v1.0',
+                                                    body: {
+                                                        subject: 'Team sync',
+                                                        body: { contentType: 'Text', content: 'Weekly sync' },
+                                                        start: { dateTime: '2025-09-01T10:00:00', timeZone: 'UTC' },
+                                                        end: { dateTime: '2025-09-01T11:00:00', timeZone: 'UTC' },
+                                                        attendees: [{ emailAddress: { address: 'alice@example.com' }, type: 'required' }]
+                                                    }
+                                                }
+                                            },
+                                            {
+                                                description: 'Upload file to OneDrive (replace path)',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: "/me/drive/root:/Documents/example.txt:/content",
+                                                    method: 'put',
+                                                    graphApiVersion: 'v1.0',
+                                                    body: { /* raw file bytes expected by the client when using HTTP */ }
+                                                }
+                                            },
+                                            {
+                                                description: 'Get group members',
+                                                value: {
+                                                    apiType: 'graph',
+                                                    path: '/groups/{group-id}/members',
+                                                    method: 'get',
+                                                    graphApiVersion: 'v1.0',
+                                                    fetchAll: true
+                                                }
+                                            },
+                                            {
+                                                description: 'Azure: list subscriptions (ARM)',
+                                                value: {
+                                                    apiType: 'azure',
+                                                    path: '/subscriptions',
+                                                    method: 'get',
+                                                    apiVersion: '2020-01-01',
+                                                    fetchAll: true
+                                                }
+                                            }
+                                        ]
                                     },
                                     {
                                         name: "set-access-token",
@@ -477,39 +617,134 @@ export class MSGraphMCP {
                             });
                         }
                         
-                        // Handle tool calls using the MCP server
-                        const server = mcp.server;
-                            // Special-case 'ping' to return an empty OK result (no 'content' key)
-                            if (body.method === 'ping') {
-                                return new Response(
-                                    JSON.stringify({
-                                        jsonrpc: '2.0',
-                                        id: body.id,
-                                        result: {},
-                                    }),
-                                    { headers: { 'Content-Type': 'application/json' } }
-                                );
-                            }
-
-                            // This would need proper MCP protocol handling for tool calls
-                            // For now, return a placeholder tool response using the standard 'content' shape
+                        // Handle tool calls using the MCP server (direct dispatch for known tools)
+                        // Special-case 'ping' to return an empty OK result (no 'content' key)
+                        if (body.method === 'ping') {
                             return new Response(
                                 JSON.stringify({
                                     jsonrpc: '2.0',
                                     id: body.id,
-                                    result: {
-                                        content: [
-                                            {
-                                                type: 'text',
-                                                text: 'Tool execution not yet implemented',
-                                            },
-                                        ],
-                                    },
+                                    result: {},
                                 }),
-                                {
-                                    headers: { 'Content-Type': 'application/json' },
-                                }
+                                { headers: { 'Content-Type': 'application/json' } }
                             );
+                        }
+
+                        try {
+                            // Directly handle common tool calls by invoking the MSGraphService methods
+                            const params = body.params || {};
+
+                            // Expect the client/model to provide structured params per the tool schema (like Lokka).
+                            // Default apiType to 'graph' if omitted for backward compatibility.
+                            if (!params.apiType) params.apiType = 'graph';
+
+                            if (body.method === 'microsoft-graph-api') {
+                                const {
+                                    apiType,
+                                    path,
+                                    method,
+                                    apiVersion,
+                                    subscriptionId,
+                                    queryParams,
+                                    body: requestBody,
+                                    graphApiVersion,
+                                    fetchAll,
+                                    consistencyLevel
+                                } = params;
+
+                                if (apiType === 'azure') {
+                                    const responseData = await mcp.msGraphServiceInstance.azureRequest(
+                                        path,
+                                        method,
+                                        requestBody,
+                                        queryParams,
+                                        apiVersion,
+                                        subscriptionId,
+                                        fetchAll
+                                    );
+
+                                    return new Response(JSON.stringify({
+                                        jsonrpc: '2.0',
+                                        id: body.id,
+                                        result: { content: [{ type: 'text', text: JSON.stringify(responseData, null, 2) }] }
+                                    }), { headers: { 'Content-Type': 'application/json' } });
+                                }
+
+                                const responseData = await mcp.msGraphServiceInstance.genericGraphRequest(
+                                    path,
+                                    method,
+                                    requestBody,
+                                    queryParams,
+                                    graphApiVersion || 'v1.0',
+                                    fetchAll,
+                                    consistencyLevel
+                                );
+
+                                return new Response(JSON.stringify({
+                                    jsonrpc: '2.0',
+                                    id: body.id,
+                                    result: { content: [{ type: 'text', text: JSON.stringify(responseData, null, 2) }] }
+                                }), { headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            if (body.method === 'getCurrentUserProfile') {
+                                const profile = await mcp.msGraphServiceInstance.getCurrentUserProfile();
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(profile, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            if (body.method === 'getUsers') {
+                                const { queryParams, fetchAll } = params;
+                                const users = await mcp.msGraphServiceInstance.getUsers(queryParams, fetchAll);
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(users, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            if (body.method === 'getGroups') {
+                                const { queryParams, fetchAll } = params;
+                                const groups = await mcp.msGraphServiceInstance.getGroups(queryParams, fetchAll);
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(groups, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            if (body.method === 'getApplications') {
+                                const { queryParams, fetchAll } = params;
+                                const apps = await mcp.msGraphServiceInstance.getApplications(queryParams, fetchAll);
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(apps, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            if (body.method === 'get-auth-status') {
+                                // Access private authManager via any to avoid type visibility issues
+                                const authMode = (mcp as any).authManager?.getAuthMode ? (mcp as any).authManager.getAuthMode() : 'Not initialized';
+                                const tokenStatus = (mcp as any).authManager ? await (mcp as any).authManager.getTokenStatus() : { isExpired: false };
+                                const status = { authMode, tokenStatus, timestamp: new Date().toISOString() };
+                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
+                            }
+
+                            if (body.method === 'set-access-token') {
+                                const { accessToken, refreshToken, expiresOn } = params;
+                                if ((mcp as any).authManager?.getAuthMode && (mcp as any).authManager.getAuthMode() === AuthMode.ClientProvidedToken) {
+                                    const expirationDate = expiresOn ? new Date(expiresOn) : undefined;
+                                    (mcp as any).authManager.updateAccessToken(accessToken, expirationDate, refreshToken);
+                                    // Reinitialize service with new token
+                                    (mcp as any).authContext = { ...(mcp as any).authContext, accessToken, refreshToken };
+                                    await (mcp as any).initialize();
+                                    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: 'Access token updated successfully.' }] } }), { headers: { 'Content-Type': 'application/json' } });
+                                } else {
+                                    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32000, message: 'Server not configured for client-provided token auth' } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+                                }
+                            }
+
+                            // Unknown tool
+                            return new Response(JSON.stringify({
+                                jsonrpc: '2.0',
+                                id: body.id,
+                                error: { code: -32601, message: `Method not found: ${body.method}` }
+                            }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+                        } catch (err: any) {
+                            return new Response(JSON.stringify({
+                                jsonrpc: '2.0',
+                                id: body.id || null,
+                                error: { code: -32000, message: err instanceof Error ? err.message : String(err) }
+                            }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+                        }
                         
                     } catch (error) {
                         console.error('MCP request processing error:', error);
