@@ -300,8 +300,6 @@ export class MSGraphMCP {
                     USE_INTERACTIVE: process.env.USE_INTERACTIVE,
                     USE_CLIENT_TOKEN: process.env.USE_CLIENT_TOKEN,
                     USE_CERTIFICATE: process.env.USE_CERTIFICATE,
-                    SPOTIFY_CLIENT_ID: process.env.SPOTIFY_CLIENT_ID,
-                    SPOTIFY_CLIENT_SECRET: process.env.SPOTIFY_CLIENT_SECRET
                 };
 
                 const mcp = new MSGraphMCP(env, authContext);
