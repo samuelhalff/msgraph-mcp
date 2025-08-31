@@ -8,9 +8,6 @@ services:
       # Enable BuildKit optimizations
       args:
         BUILDKIT_INLINE_CACHE: 1
-      # Additional build options for speed
-      options:
-        - BUILDKIT_PROGRESS=plain
     container_name: msgraph-mcp
     ports:
       - "3001:3001"
