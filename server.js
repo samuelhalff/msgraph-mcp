@@ -69,6 +69,13 @@ app.use('*', cors({
 
 // OAuth Discovery endpoint
 app.get('/.well-known/oauth-authorization-server', (c) => {
+    logger.info('OAuth discovery endpoint accessed', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        userAgent: c.req.header('user-agent'),
+        method: c.req.method,
+        path: c.req.path
+    });
+    
     const baseUrl = c.req.url.split('/.well-known')[0];
     return c.json({
         issuer: baseUrl,
@@ -93,7 +100,19 @@ app.get('/.well-known/oauth-authorization-server', (c) => {
 app.post('/register', async (c) => {
     try {
         const registration = await c.req.json();
+        logger.info('Client registration attempt', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            userAgent: c.req.header('user-agent'),
+            clientName: registration.client_name,
+            redirectUris: registration.redirect_uris
+        });
+        
         if (!registration.client_name || !registration.redirect_uris) {
+            logger.warn('Client registration failed: missing required fields', {
+                ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                hasClientName: !!registration.client_name,
+                hasRedirectUris: !!registration.redirect_uris
+            });
             return c.json({ error: 'Missing required fields: client_name, redirect_uris' }, 400);
         }
 
@@ -110,6 +129,13 @@ app.post('/register', async (c) => {
         };
 
         registeredClients.set(client_id, client);
+        
+        logger.info('Client registration successful', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            clientId: client_id,
+            clientName: client.client_name
+        });
+        
         return c.json({
             client_id: client.client_id,
             client_secret: 'msgraph-mcp-secret',
@@ -130,17 +156,43 @@ app.post('/register', async (c) => {
 // Authorization endpoint
 app.get('/authorize', async (c) => {
     const { client_id, redirect_uri, scope, state, response_type, code_challenge, code_challenge_method } = c.req.query();
+    
+    logger.info('Authorization endpoint accessed', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        userAgent: c.req.header('user-agent'),
+        clientId: client_id,
+        redirectUri: redirect_uri,
+        scope: scope,
+        responseType: response_type,
+        hasCodeChallenge: !!code_challenge,
+        codeChallengeMethod: code_challenge_method
+    });
 
     if (!client_id || !redirect_uri) {
+        logger.warn('Authorization failed: missing required parameters', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            hasClientId: !!client_id,
+            hasRedirectUri: !!redirect_uri
+        });
         return c.json({ error: 'Missing required parameters: client_id, redirect_uri' }, 400);
     }
 
     const client = registeredClients.get(client_id);
     if (!client) {
+        logger.warn('Authorization failed: invalid client_id', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            clientId: client_id
+        });
         return c.json({ error: 'Invalid client_id' }, 400);
     }
 
     if (!client.redirect_uris.includes(redirect_uri)) {
+        logger.warn('Authorization failed: invalid redirect_uri', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            clientId: client_id,
+            redirectUri: redirect_uri,
+            allowedUris: client.redirect_uris
+        });
         return c.json({ error: 'Invalid redirect_uri' }, 400);
     }
 
@@ -166,6 +218,12 @@ app.get('/authorize', async (c) => {
         msGraphAuthUrl.searchParams.set('code_challenge_method', code_challenge_method);
     }
 
+    logger.info('Redirecting to Microsoft OAuth', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        clientId: client_id,
+        msGraphUrl: msGraphAuthUrl.toString()
+    });
+
     return c.redirect(msGraphAuthUrl.toString());
 });
 
@@ -181,8 +239,24 @@ app.post('/token', async (c) => {
         const refresh_token = body.refresh_token;
         const code_verifier = body.code_verifier;
 
+        logger.info('Token endpoint accessed', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            userAgent: c.req.header('user-agent'),
+            grantType: grant_type,
+            clientId: client_id,
+            hasCode: !!code,
+            hasRefreshToken: !!refresh_token,
+            hasCodeVerifier: !!code_verifier
+        });
+
         if (grant_type === 'authorization_code') {
             if (!code || !redirect_uri || !client_id) {
+                logger.warn('Token exchange failed: missing required parameters for authorization_code', {
+                    ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                    hasCode: !!code,
+                    hasRedirectUri: !!redirect_uri,
+                    hasClientId: !!client_id
+                });
                 return c.json({ error: 'Missing required parameters' }, 400);
             }
 
@@ -202,10 +276,19 @@ app.post('/token', async (c) => {
                     } else if (client.code_challenge_method === 'plain') {
                         expectedChallenge = code_verifier;
                     } else {
+                        logger.warn('Token exchange failed: unsupported code challenge method', {
+                            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                            clientId: client_id,
+                            method: client.code_challenge_method
+                        });
                         return c.json({ error: 'Unsupported code challenge method' }, 400);
                     }
 
                     if (expectedChallenge !== client.code_challenge) {
+                        logger.warn('Token exchange failed: invalid code verifier', {
+                            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                            clientId: client_id
+                        });
                         return c.json({ error: 'Invalid code verifier' }, 400);
                     }
 
@@ -217,15 +300,41 @@ app.post('/token', async (c) => {
             }
 
             const tokenResponse = await exchangeCodeForToken(code, redirect_uri, process.env.CLIENT_ID || '', process.env.CLIENT_SECRET || '');
+            
+            logger.info('Token exchange successful', {
+                ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                clientId: client_id,
+                grantType: 'authorization_code',
+                hasAccessToken: !!tokenResponse.access_token,
+                hasRefreshToken: !!tokenResponse.refresh_token
+            });
+            
             return c.json(tokenResponse);
         } else if (grant_type === 'refresh_token') {
             if (!refresh_token) {
+                logger.warn('Token refresh failed: missing refresh_token', {
+                    ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                    clientId: client_id
+                });
                 return c.json({ error: 'Missing refresh_token' }, 400);
             }
 
             const tokenResponse = await refreshAccessToken(refresh_token, process.env.CLIENT_ID || '', process.env.CLIENT_SECRET || '');
+            
+            logger.info('Token refresh successful', {
+                ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                clientId: client_id,
+                grantType: 'refresh_token',
+                hasAccessToken: !!tokenResponse.access_token,
+                hasRefreshToken: !!tokenResponse.refresh_token
+            });
+            
             return c.json(tokenResponse);
         } else {
+            logger.warn('Token exchange failed: unsupported grant_type', {
+                ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                grantType: grant_type
+            });
             return c.json({ error: 'Unsupported grant_type' }, 400);
         }
     } catch (error) {
@@ -236,6 +345,12 @@ app.post('/token', async (c) => {
 
 // User info endpoint
 app.get('/userinfo', msGraphBearerTokenAuthMiddleware, async (c) => {
+    logger.info('User info endpoint accessed', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        userAgent: c.req.header('user-agent'),
+        hasAuth: !!c.req.header('Authorization')
+    });
+    
     return c.json({
         sub: 'user-id',
         name: 'User Name',
@@ -245,13 +360,33 @@ app.get('/userinfo', msGraphBearerTokenAuthMiddleware, async (c) => {
 
 // Logout endpoint
 app.post('/logout', (c) => {
+    logger.info('Logout endpoint accessed', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        userAgent: c.req.header('user-agent'),
+        method: c.req.method
+    });
+    
     return c.json({ message: 'Logged out successfully' });
 });
 
 // MCP route
 app.post('/mcp', async (c) => {
     const authHeader = c.req.header('Authorization');
+    
+    logger.info('MCP endpoint accessed', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        userAgent: c.req.header('user-agent'),
+        hasAuth: !!authHeader,
+        contentType: c.req.header('content-type')
+    });
+    
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        logger.warn('MCP request rejected: missing or invalid authorization', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            hasAuth: !!authHeader,
+            authType: authHeader ? authHeader.split(' ')[0] : 'none'
+        });
+        
         // Return OAuth-specific error for MCP clients
         const baseUrl = c.req.url.split('/mcp')[0];
         return c.json({
@@ -296,9 +431,20 @@ app.post('/mcp', async (c) => {
         const server = mcp.server;
         const request = await c.req.json();
 
+        logger.info('MCP request received', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            method: request.method,
+            id: request.id,
+            hasParams: !!request.params
+        });
+
         // Handle MCP protocol messages properly
         if (request.method === 'initialize') {
-            // Handle initialization
+            logger.info('MCP initialize request', {
+                ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                protocolVersion: request.params?.protocolVersion
+            });
+            
             return c.json({
                 jsonrpc: "2.0",
                 id: request.id,
@@ -314,7 +460,10 @@ app.post('/mcp', async (c) => {
                 }
             });
         } else if (request.method === 'tools/list') {
-            // Return available tools
+            logger.info('MCP tools/list request', {
+                ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
+            });
+            
             return c.json({
                 jsonrpc: "2.0",
                 id: request.id,
@@ -352,8 +501,13 @@ app.post('/mcp', async (c) => {
                 }
             });
         } else if (request.method === 'tools/call') {
-            // Handle tool calls by delegating to the MCP server
             const { name, arguments: args } = request.params;
+            
+            logger.info('MCP tools/call request', {
+                ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                toolName: name,
+                hasArgs: !!args
+            });
 
             try {
                 let result;
@@ -367,9 +521,27 @@ app.post('/mcp', async (c) => {
                         args.fetchAll || false,
                         args.consistencyLevel
                     );
+                    
+                    logger.info('MCP tool execution successful', {
+                        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                        toolName: name,
+                        path: args.path,
+                        method: args.method
+                    });
+                    
                 } else if (name === 'get-auth-status') {
                     result = { status: 'authenticated', user: 'current-user' };
+                    
+                    logger.info('MCP auth status check', {
+                        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown'
+                    });
+                    
                 } else {
+                    logger.warn('MCP unknown tool requested', {
+                        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                        toolName: name
+                    });
+                    
                     throw new Error(`Unknown tool: ${name}`);
                 }
 
@@ -384,6 +556,12 @@ app.post('/mcp', async (c) => {
                     }
                 });
             } catch (error) {
+                logger.error('MCP tool execution failed', {
+                    ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+                    toolName: name,
+                    error: error.message
+                });
+                
                 return c.json({
                     jsonrpc: "2.0",
                     id: request.id,
@@ -396,6 +574,11 @@ app.post('/mcp', async (c) => {
         }
 
         // Default response for unhandled methods
+        logger.warn('MCP unknown method requested', {
+            ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+            method: request.method
+        });
+        
         return c.json({
             jsonrpc: "2.0",
             id: request.id,
@@ -419,7 +602,25 @@ app.post('/mcp', async (c) => {
 
 // Health check endpoint
 app.get('/health', (c) => {
+    logger.info('Health check endpoint accessed', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        userAgent: c.req.header('user-agent')
+    });
+    
     return c.json({ status: 'ok', service: 'msgraph-mcp' });
+});
+
+// 404 handler for unmatched routes
+app.notFound((c) => {
+    logger.warn('404 - Route not found', {
+        ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
+        userAgent: c.req.header('user-agent'),
+        method: c.req.method,
+        path: c.req.path,
+        query: c.req.query()
+    });
+    
+    return c.json({ error: 'Not Found', message: `Route ${c.req.method} ${c.req.path} not found` }, 404);
 });
 
 // Start the server
