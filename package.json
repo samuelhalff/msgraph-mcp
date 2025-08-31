@@ -12,8 +12,8 @@
 	"scripts": {
 		"dev": "tsx watch api/index.ts",
 		"build": "tsc -b",
-		"start": "node server.js",
-		"server": "node server.js",
+		"start": "mkdir -p logs && node server.js",
+		"server": "mkdir -p logs && node server.js",
 		"lint": "eslint ."
 	},
 	"dependencies": {
