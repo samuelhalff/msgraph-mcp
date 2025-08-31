@@ -16,9 +16,10 @@ export {MSGraphMCP};
 // Helper functions
 function getMSGraphAuthEndpoint(type: string): string {
     // Microsoft Graph authorization endpoints
+    const tenantId = process.env.TENANT_ID || 'common';
     const endpoints = {
-        authorize: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-        token: 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+        authorize: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
+        token: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`
     };
     return endpoints[type as keyof typeof endpoints] || endpoints.authorize;
 }

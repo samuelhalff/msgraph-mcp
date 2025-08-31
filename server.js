@@ -56,9 +56,10 @@ export { MSGraphMCP };
 
 // Helper functions
 function getMSGraphAuthEndpoint(type) {
+    const tenantId = process.env.TENANT_ID || 'common';
     const endpoints = {
-        authorize: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-        token: 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+        authorize: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
+        token: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`
     };
     return endpoints[type] || endpoints.authorize;
 }
@@ -87,19 +88,32 @@ app.use('*', cors({
 
 // OAuth Discovery endpoint
 app.get('/.well-known/oauth-authorization-server', (c) => {
+    const queryParams = Object.fromEntries(new URL(c.req.url).searchParams);
+    const headers = Object.fromEntries(
+        Object.entries(c.req.raw.headers).filter(([key]) => 
+            ['user-agent', 'accept', 'accept-language', 'x-forwarded-for', 'x-real-ip', 'host'].includes(key.toLowerCase())
+        )
+    );
+    
     logger.info('OAuth discovery endpoint accessed', {
         ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown',
         userAgent: c.req.header('user-agent'),
         method: c.req.method,
-        path: c.req.path
+        path: c.req.path,
+        queryParams: queryParams,
+        headers: headers,
+        timestamp: new Date().toISOString(),
+        url: c.req.url
     });
     
+    const tenantId = process.env.TENANT_ID || 'common';
     const baseUrl = c.req.url.split('/.well-known')[0];
+    
     return c.json({
-        issuer: baseUrl,
-        authorization_endpoint: `${baseUrl}/authorize`,
-        token_endpoint: `${baseUrl}/token`,
-        jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+        issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+        authorization_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
+        token_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+        jwks_uri: `https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`,
         response_types_supported: ['code'],
         grant_types_supported: ['authorization_code', 'refresh_token'],
         token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post'],

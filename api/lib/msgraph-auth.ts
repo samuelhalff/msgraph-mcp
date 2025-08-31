@@ -35,9 +35,10 @@ export const spotifyBearerTokenAuthMiddleware = createMiddleware<{
  * Get Microsoft Graph OAuth endpoints
  */
 export function getMSGraphAuthEndpoint(endpoint: string): string {
+    const tenantId = process.env.TENANT_ID || 'common';
     const endpoints = {
-        authorize: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-        token: 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+        authorize: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
+        token: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`
     };
     return endpoints[endpoint as keyof typeof endpoints] || endpoints.authorize;
 }
