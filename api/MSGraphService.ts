@@ -443,4 +443,114 @@ export class MSGraphService {
     ): Promise<any> {
         return this.makeGraphRequest(path, method, body, queryParams, graphApiVersion, fetchAll, consistencyLevel)
     }
+
+  // Azure Resource Management requests (management.azure.com)
+  async azureRequest(
+    path: string,
+    method: 'get' | 'post' | 'put' | 'patch' | 'delete' = 'get',
+    body?: any,
+    queryParams?: Record<string, string>,
+    apiVersion?: string,
+    subscriptionId?: string,
+    fetchAll: boolean = false
+  ): Promise<any> {
+    if (!this.authManager) {
+      throw new Error('Auth manager not initialized');
+    }
+
+    const azureCredential: any = this.authManager.getAzureCredential();
+    if (!azureCredential || typeof azureCredential.getToken !== 'function') {
+      throw new Error('Azure credential not available for Azure Resource Management requests');
+    }
+
+    if (!apiVersion) {
+      throw new Error('API version is required for Azure Resource Management queries');
+    }
+
+    const tokenResponse = await azureCredential.getToken('https://management.azure.com/.default');
+    if (!tokenResponse || !tokenResponse.token) {
+      throw new Error('Failed to acquire Azure access token');
+    }
+
+    const base = 'https://management.azure.com';
+    let url = base;
+    if (subscriptionId) {
+      // ensure leading slash handling
+      url += `/subscriptions/${subscriptionId}`;
+    }
+    // ensure path starts with '/'
+    url += path.startsWith('/') ? path : `/${path}`;
+
+    const urlParams = new URLSearchParams({ 'api-version': apiVersion });
+    if (queryParams) {
+      for (const [key, value] of Object.entries(queryParams)) {
+        urlParams.append(String(key), String(value));
+      }
+    }
+
+    url += `?${urlParams.toString()}`;
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${tokenResponse.token}`,
+      'Content-Type': 'application/json'
+    };
+
+    const requestOptions: RequestInit = {
+      method: method.toUpperCase(),
+      headers: headers
+    };
+
+    if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
+      requestOptions.body = body ? JSON.stringify(body) : JSON.stringify({});
+    }
+
+    // Pagination for Azure RM
+    if (fetchAll && method === 'get') {
+      let allValues: any[] = [];
+      let currentUrl: string | null = url;
+
+      while (currentUrl) {
+        const resp = await fetch(currentUrl, requestOptions);
+        const text = await resp.text();
+        let pageData: any = {};
+        try {
+          pageData = text ? JSON.parse(text) : {};
+        } catch (e) {
+          pageData = { rawResponse: text };
+        }
+
+        if (!resp.ok) {
+          throw new Error(`API error (${resp.status}) for Azure RM: ${JSON.stringify(pageData)}`);
+        }
+
+        if (Array.isArray(pageData.value)) {
+          allValues = allValues.concat(pageData.value);
+        } else if (currentUrl === url && !pageData.nextLink) {
+          allValues.push(pageData);
+        } else if (!Array.isArray(pageData.value)) {
+          // warn but continue
+        }
+
+        currentUrl = pageData.nextLink || null;
+      }
+
+      return { allValues };
+    }
+
+    // Single request
+    const apiResponse = await fetch(url, requestOptions);
+    const responseText = await apiResponse.text();
+    let responseData: any;
+    try {
+      responseData = responseText ? JSON.parse(responseText) : {};
+    } catch (e) {
+      responseData = { rawResponse: responseText };
+    }
+
+    if (!apiResponse.ok) {
+      throw new Error(`API error (${apiResponse.status}) for Azure RM: ${JSON.stringify(responseData)}`);
+    }
+
+    return responseData;
+  }
 } 
