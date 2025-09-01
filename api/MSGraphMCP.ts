@@ -606,6 +606,13 @@ export class MSGraphMCP {
                                 }), {
                                     headers: { 'Content-Type': 'application/json' }
                                 });
+                            } else if (body.method === 'ping') {
+                                // Return empty result for ping (no content key)
+                                return new Response(JSON.stringify({
+                                    jsonrpc: '2.0',
+                                    id: body.id,
+                                    result: {}
+                                }), { headers: { 'Content-Type': 'application/json' } });
                             }
                         } else if (body.method === 'notifications/initialized') {
                             logger.info('Received notifications/initialized from client', { id: body.id, params: body.params });
