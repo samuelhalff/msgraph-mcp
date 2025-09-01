@@ -3,7 +3,6 @@
  * -------------------------------------------------------------------- */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 import { MSGraphService } from "./MSGraphService.js";
 import { Env, MSGraphAuthContext } from "../types.js";
@@ -15,20 +14,13 @@ import logger from "./lib/logger.js";
  * - No manual StreamableHTTPServerTransport usage
  * - Uses the SDK's built-in `server.handle(request)` to process requests
  */
-export class MSGraphMCP extends McpAgent<Env, unknown, MSGraphAuthContext> {
+export class MSGraphMCP {
   public readonly env: Env;
   public readonly auth: MSGraphAuthContext;
 
   constructor(env: Env, auth: MSGraphAuthContext) {
-    // Pass a placeholder DurableObjectState (as any) plus the env to satisfy
-    // the McpAgent constructor signature which expects two arguments.
-    super({} as any, env as any);
     this.env = env;
     this.auth = auth;
-  }
-
-  async init() {
-    // Initialize any necessary state
   }
 
   /** Lazily-initialized MSGraphService */
