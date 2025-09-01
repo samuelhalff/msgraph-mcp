@@ -4,8 +4,6 @@ import { InteractiveBrowserCredential, ClientSecretCredential, ClientCertificate
 import logger, { logToken } from "./lib/logger.js";
 import { Env } from "../types";
 
-// Note: In Cloudflare Workers, fetch is already available globally
-// No need to set up isomorphic-fetch
 
 export enum AuthMode {
   ClientCredentials = "ClientCredentials",
@@ -65,8 +63,7 @@ export class AuthManager {
         }
         break;
       case AuthMode.Interactive:
-        // For Cloudflare Workers, interactive auth might need different handling
-        // This is a simplified version
+
         this.credential = new InteractiveBrowserCredential({
           tenantId: this.config.tenantId,
           clientId: this.config.clientId,
