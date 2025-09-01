@@ -242,48 +242,49 @@ export class MSGraphMCP {
   // This is the main entry point that LibreChat will call for every request.
   static serve() {
     return {
-      fetch: async (request: Request) => {
-        // 1. Extract the user's token from the header for this specific request.
-        const authHeader = request.headers.get("Authorization");
+      fetch: async (request: Request): Promise<Response> => {
+        // 1.  Extract bearer / refresh tokens that LibreChat sends
+        const authHeader = request.headers.get('Authorization') ?? '';
         const authContext: MSGraphAuthContext = {
-          accessToken: authHeader?.startsWith("Bearer ")
-            ? authHeader.substring(7)
-            : "",
-          refreshToken: request.headers.get("X-Refresh-Token") || undefined,
+          accessToken: authHeader.startsWith('Bearer ')
+            ? authHeader.slice(7)
+            : '',
+          refreshToken: request.headers.get('x-refresh-token') ?? undefined,
         };
 
-        // 2. Load the application environment.
+        // 2.  Load env variables that your service needs
         const env: Env = {
-          TENANT_ID: process.env.TENANT_ID,
-          CLIENT_ID: process.env.CLIENT_ID,
-          CLIENT_SECRET: process.env.CLIENT_SECRET,
-          // ... map all other required process.env variables
+          TENANT_ID:     process.env.TENANT_ID     || '',
+          CLIENT_ID:     process.env.CLIENT_ID     || '',
+          CLIENT_SECRET: process.env.CLIENT_SECRET || '',
         };
 
         try {
-          // 3. Create a new, temporary instance of our class for this request.
+          // 3.  Create a one-off MSGraphMCP instance for this request
           const mcp = new MSGraphMCP(env, authContext);
 
-          // Return a simple error for now - request handling should be done in index.ts
-          return new Response(
-            JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32601, message: "Method not implemented" },
-              id: null,
-            }),
-            { status: 501, headers: { "Content-Type": "application/json" } }
-          );
+          // 4.  Obtain the SDK’s JSON-RPC fetch handler
+          //     (in SDK >= 0.3 you call .serve(); older versions already expose {fetch})
+          const rpcServer = (mcp.server as any).serve
+            ? (mcp.server as any).serve()   // returns { fetch }
+            : (mcp.server as any);          // already { fetch }
+
+          // 5.  Delegate the request to the real handler
+          return await rpcServer.fetch(request);
+
         } catch (error: unknown) {
           const message =
             error instanceof Error ? error.message : String(error);
-          logger.error("Fatal error in the fetch handler", { message });
+          logger.error('Fatal error in the fetch handler', { message });
+
+          // What you previously returned on error:
           return new Response(
             JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32603, message: "Internal Server Error" },
+              jsonrpc: '2.0',
+              error: { code: -32603, message: 'Internal Server Error' },
               id: null,
             }),
-            { status: 500, headers: { "Content-Type": "application/json" } }
+            { status: 500, headers: { 'Content-Type': 'application/json' } },
           );
         }
       },
