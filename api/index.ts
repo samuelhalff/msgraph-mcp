@@ -265,7 +265,7 @@ app.route(
   "/mcp",
   new Hono().mount(
     "/",
-    (MSGraphMCP as any).serve("/mcp", { binding: "MSGRAPH_MCP_OBJECT" }).fetch
+    MSGraphMCP.serve("/mcp", { binding: "MSGRAPH_MCP_OBJECT" }).fetch
   )
 );
 
