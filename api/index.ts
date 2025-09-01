@@ -261,13 +261,7 @@ app.post("/logout", (c) => {
 app.use("/mcp", msGraphBearerTokenAuthMiddleware);
 
 // NOTE: you can pick any binding name you like, or omit the option object
-app.route(
-  "/mcp",
-  new Hono().mount(
-    "/",
-    MSGraphMCP.serve("/mcp", { binding: "MSGRAPH_MCP_OBJECT" }).fetch
-  )
-);
+app.route("/mcp", new Hono().mount("/", MSGraphMCP.serve().fetch));
 
 // Your commented-out SSE route is preserved.
 // app.use('/sse/*', msGraphBearerTokenAuthMiddleware)
