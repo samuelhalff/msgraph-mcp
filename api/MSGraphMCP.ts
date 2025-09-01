@@ -382,8 +382,8 @@ export class MSGraphMCP {
                         logger.debug('Full MCP request body', { body });
                         logger.debug('Request headers', { headers: Object.fromEntries(request.headers.entries()) });
                         
-                        // For discovery requests (initialize, tools/list), don't require auth
-                        if (body.method === 'initialize' || body.method === 'tools/list') {
+                        // For discovery requests (initialize, tools/list, ping), don't require auth
+                        if (body.method === 'initialize' || body.method === 'tools/list' || body.method === 'ping') {
                             logger.info('Processing discovery request', { method: body.method });
                             const server = mcp.server;
                             
@@ -603,6 +603,13 @@ export class MSGraphMCP {
                                     headers: { 'Content-Type': 'application/json' }
                                 });
                             }
+                        } else if (body.method === 'ping') {
+                            // Return empty result for ping (no content key)
+                            return new Response(JSON.stringify({
+                                jsonrpc: '2.0',
+                                id: body.id,
+                                result: {}
+                            }), { headers: { 'Content-Type': 'application/json' } });
                         }
                         
                         // Support streamable-http / LibreChat transport signals
@@ -711,17 +718,6 @@ export class MSGraphMCP {
                             });
                         }
                         // Handle tool calls using the MCP server (direct dispatch for known tools)
-                        // Special-case 'ping' to return an empty OK result (no 'content' key)
-                        if (body.method === 'ping') {
-                            return new Response(
-                                JSON.stringify({
-                                    jsonrpc: '2.0',
-                                    id: body.id,
-                                    result: {},
-                                }),
-                                { headers: { 'Content-Type': 'application/json' } }
-                            );
-                        }
 
 
                         try {
