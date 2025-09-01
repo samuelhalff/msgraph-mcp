@@ -281,11 +281,11 @@ app.post("/logout", (c) => {
 });
 
 // MCP route - simplified to use MCP SDK's built-in discovery handling
-app.route('/mcp', new Hono().mount('/', MSGraphMCP.serve('/mcp', { binding: 'MSGRAPH_MCP_OBJECT' }).fetch))
+app.route('/mcp', new Hono().mount('/', MSGraphMCP.serve().fetch))
 
 // SSE route for streaming connections
 app.use('/sse/*', msGraphBearerTokenAuthMiddleware)
-app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE('/sse', { binding: 'MSGRAPH_MCP_OBJECT' }).fetch))
+app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE().fetch))
 
 // Health check endpoint
 app.get("/health", (c) => {
