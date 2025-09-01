@@ -3,7 +3,6 @@ import { exchangeCodeForToken, refreshAccessToken } from "./lib/msgraph-auth";
 import { cors } from "hono/cors";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
-import { MSGraphAuthContext, Env } from "../types";
 import dotenv from "dotenv";
 import logger from "./lib/logger.js";
 
@@ -25,7 +24,7 @@ function getMSGraphAuthEndpoint(type: string): string {
 }
 
 // Simple bearer token authentication middleware for Microsoft Graph
-const msGraphBearerTokenAuthMiddleware = async (c: any, next: any) => {
+const msGraphBearerTokenAuthMiddleware = async (c: { req: { header: (key: string) => string | undefined }, json: (data: unknown, status?: number) => Response }, next: () => Promise<void>) => {
   const authHeader = c.req.header("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return c.json({ error: "Missing or invalid Authorization header" }, 401);
@@ -67,7 +66,8 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
       c.req.query()
     )}`
   );
-  const baseUrl = c.req.url.split("/.well-known")[0];
+  // Use public URL for OAuth discovery (required for external clients like LibreChat)
+  const baseUrl = process.env.PUBLIC_BASE_URL || c.req.url.split("/.well-known")[0];
   return c.json({
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/authorize`,
@@ -158,8 +158,7 @@ app.post("/register", async (c) => {
 // Authorization endpoint
 app.get("/authorize", async (c) => {
   logger.info(`/authorize endpoint hit, ${JSON.stringify(c.req.query())}`);
-  const { client_id, redirect_uri, scope, state, response_type } =
-    c.req.query();
+  const { client_id, redirect_uri } = c.req.query();
 
   if (!client_id || !redirect_uri) {
     return c.json(
@@ -191,7 +190,7 @@ app.get("/authorize", async (c) => {
   const incoming = c.req.query();
   Object.keys(incoming).forEach((k) => {
     if (k !== "client_id") {
-      msGraphAuthUrl.searchParams.set(k, String((incoming as any)[k]));
+      msGraphAuthUrl.searchParams.set(k, String(incoming[k]));
     }
   });
 
@@ -208,7 +207,6 @@ app.post("/token", async (c) => {
     const code = body.code as string;
     const redirect_uri = body.redirect_uri as string;
     const client_id = body.client_id as string;
-    const client_secret = body.client_secret as string;
     const refresh_token = body.refresh_token as string;
 
   logger.info(`/token called with grant_type=${grant_type}, client_id=${client_id}, redirect_uri=${redirect_uri}`);

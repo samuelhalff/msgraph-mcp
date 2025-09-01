@@ -267,7 +267,6 @@ app.post('/token', async (c) => {
         const code = body.code;
         const redirect_uri = body.redirect_uri;
         const client_id = body.client_id;
-        const client_secret = body.client_secret;
         const refresh_token = body.refresh_token;
         const code_verifier = body.code_verifier;
 

@@ -50,7 +50,7 @@ export function logToken(token: string, context: string) {
   try {
     const decoded = jwt.decode(token, { complete: true });
     if (decoded && decoded.payload) {
-      const payload = decoded.payload as any;
+      const payload = decoded.payload as { aud?: string; scp?: string; exp?: number; iat?: number; iss?: string; sub?: string; token_type?: string };
       logger.info(`[${context}] Token received`, {
         aud: payload.aud,
         scp: payload.scp,

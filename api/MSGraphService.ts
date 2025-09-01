@@ -1,21 +1,4 @@
-/* eslint-disable @typescexport interface MSGraphAuthContext {
-  accessToken: string
-  refreshToken?: string
-  expiresIn?: number
-  tokenType?: string
-  scope?: string
-}
-
-export class AuthManager {
-  private config: AuthConfig;
-  private credential: any;
-  private accessToken: string | null = null;
-  private refreshToken: string | null = null;
-  private tokenExpiration: Date | null = null;
-
-  constructor(config: AuthConfig) {
-    this.config = config;
-  }-explicit-any */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Client, PageIterator, PageCollection } from "@microsoft/microsoft-graph-client";
 import { InteractiveBrowserCredential, ClientSecretCredential, ClientCertificateCredential } from "@azure/identity";
 import logger, { logToken } from "./lib/logger.js";
@@ -45,6 +28,9 @@ export interface AuthConfig {
 export interface MSGraphAuthContext {
   accessToken: string;
   refreshToken?: string;
+  expiresIn?: number;
+  tokenType?: string;
+  scope?: string;
 }
 
 export class AuthManager {
@@ -290,9 +276,10 @@ export class MSGraphService {
                     return await request.put(body ?? {})
                 case 'patch':
                     return await request.patch(body ?? {})
-                case 'delete':
+                case 'delete': {
                     const result = await request.delete()
                     return result === undefined || result === null ? { status: "Success (No Content)" } : result
+                }
                 default:
                     throw new Error(`Unsupported method: ${method}`)
             }
@@ -358,9 +345,10 @@ export class MSGraphService {
                             return await request.put(body ?? {})
                         case 'patch':
                             return await request.patch(body ?? {})
-                        case 'delete':
+                        case 'delete': {
                             const result = await request.delete()
                             return result === undefined || result === null ? { status: "Success (No Content)" } : result
+                        }
                         default:
                             throw new Error(`Unsupported method: ${method}`)
                     }
@@ -544,7 +532,7 @@ export class MSGraphService {
         let pageData: any = {};
         try {
           pageData = text ? JSON.parse(text) : {};
-        } catch (e) {
+        } catch {
           pageData = { rawResponse: text };
         }
 
@@ -572,7 +560,7 @@ export class MSGraphService {
     let responseData: any;
     try {
       responseData = responseText ? JSON.parse(responseText) : {};
-    } catch (e) {
+    } catch {
       responseData = { rawResponse: responseText };
     }
 
