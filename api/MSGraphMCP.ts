@@ -1042,29 +1042,145 @@ export class MSGraphMCP {
                         logger.info('SSE MCP request received', { method: body.method, id: body.id });
                         logger.debug('SSE Full MCP request body', { body });
 
+                        // Allow discovery requests without authentication
+                        if (body.method === 'initialize' || body.method === 'tools/list' || body.method === 'ping') {
+                            logger.info('Processing SSE discovery request', { method: body.method });
+                            
+                            if (body.method === 'initialize') {
+                                return new Response(JSON.stringify({
+                                    jsonrpc: "2.0",
+                                    id: body.id,
+                                    result: {
+                                        protocolVersion: "2024-11-05",
+                                        capabilities: {
+                                            tools: {}
+                                        },
+                                        serverInfo: {
+                                            name: "Microsoft Graph Service",
+                                            version: "1.0.0"
+                                        }
+                                    }
+                                }), {
+                                    headers: { 'Content-Type': 'application/json' }
+                                });
+                            } else if (body.method === 'tools/list') {
+                                // Return list of available tools
+                                const tools = [
+                                    {
+                                        name: "microsoft-graph-api",
+                                        description: "A versatile tool to interact with Microsoft APIs including Microsoft Graph (Entra) and Azure Resource Management",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                apiType: { type: "string", enum: ["graph", "azure"] },
+                                                path: { type: "string" },
+                                                method: { type: "string", enum: ["get", "post", "put", "patch", "delete"] },
+                                                apiVersion: { type: "string" },
+                                                subscriptionId: { type: "string" },
+                                                queryParams: { type: "object" },
+                                                body: { type: "object" },
+                                                graphApiVersion: { type: "string", enum: ["v1.0", "beta"] },
+                                                fetchAll: { type: "boolean" },
+                                                consistencyLevel: { type: "string" }
+                                            },
+                                            required: ["apiType", "path", "method"]
+                                        }
+                                    },
+                                    {
+                                        name: "set-access-token",
+                                        description: "Set or update the access token for Microsoft Graph authentication",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                accessToken: { type: "string" },
+                                                refreshToken: { type: "string" },
+                                                expiresOn: { type: "string" }
+                                            },
+                                            required: ["accessToken"]
+                                        }
+                                    },
+                                    {
+                                        name: "get-auth-status",
+                                        description: "Check the current authentication status and mode of the MCP Server",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {}
+                                        }
+                                    },
+                                    {
+                                        name: "getCurrentUserProfile",
+                                        description: "Get the current user's Microsoft Graph profile",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {}
+                                        }
+                                    },
+                                    {
+                                        name: "getUsers",
+                                        description: "Get users from Microsoft Graph",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                queryParams: { type: "object" },
+                                                fetchAll: { type: "boolean" }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        name: "getGroups",
+                                        description: "Get groups from Microsoft Graph",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                queryParams: { type: "object" },
+                                                fetchAll: { type: "boolean" }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        name: "getApplications",
+                                        description: "Get applications from Microsoft Graph",
+                                        inputSchema: {
+                                            type: "object",
+                                            properties: {
+                                                queryParams: { type: "object" },
+                                                fetchAll: { type: "boolean" }
+                                            }
+                                        }
+                                    }
+                                ];
+                                
+                                return new Response(JSON.stringify({
+                                    jsonrpc: "2.0",
+                                    id: body.id,
+                                    result: { tools }
+                                }), {
+                                    headers: { 'Content-Type': 'application/json' }
+                                });
+                            } else if (body.method === 'ping') {
+                                return new Response(JSON.stringify({
+                                    jsonrpc: '2.0',
+                                    id: body.id,
+                                    result: {},
+                                }), { headers: { 'Content-Type': 'application/json' } });
+                            }
+                        }
+
                         // For tool calls, require authentication
                         if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                            const baseUrl = (process.env.PUBLIC_BASE_URL || `http://localhost:3001`).replace(/\/$/, '');
+                            const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
                                 error: {
                                     code: -32002,
-                                    message: "Authentication required"
+                                    message: `OAuth authentication required. Please check the server logs for the authentication URL. OAuth discovery endpoint: ${oauthDiscoveryUrl}`
                                 },
                                 id: body.id
                             }), {
                                 status: 401,
                                 headers: { 'Content-Type': 'application/json' }
                             });
-                        }
-
-                        // Special-case 'ping' to return empty OK result (no 'content' key)
-                        if (body.method === 'ping') {
-                            logger.info('Processing SSE ping request');
-                            return new Response(JSON.stringify({
-                                jsonrpc: '2.0',
-                                id: body.id,
-                                result: {},
-                            }), { headers: { 'Content-Type': 'application/json' } });
                         }
 
 
