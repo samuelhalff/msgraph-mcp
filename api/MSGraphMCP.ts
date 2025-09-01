@@ -1,5 +1,4 @@
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js'
-import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js'
 import {z} from 'zod'
 import {MSGraphService, AuthManager, AuthMode, AuthConfig} from "./MSGraphService.js";
 import {MSGraphAuthContext, Env} from "../types";
@@ -101,8 +100,6 @@ export class MSGraphMCP {
                 apiType,
                 path,
                 method,
-                apiVersion,
-                subscriptionId,
                 queryParams,
                 body,
                 graphApiVersion,
@@ -166,7 +163,6 @@ export class MSGraphMCP {
                         this.authManager.updateAccessToken(accessToken, expirationDate, refreshToken);
 
                         // Reinitialize the Graph client with the new token
-                        const authProvider = this.authManager.getGraphAuthProvider();
                         this.msGraphService = new MSGraphService(this.env, {
                             ...this.authContext,
                             accessToken,
@@ -309,7 +305,7 @@ export class MSGraphMCP {
     }
 
     // Static methods for MCP server setup
-    static serve(path: string, options?: any) {
+    static serve(_path: string, _options?: any) {
         return {
             fetch: async (request: Request) => {
                 // Extract auth context from request headers
@@ -364,7 +360,7 @@ export class MSGraphMCP {
                         let body: any;
                         try {
                             body = JSON.parse(bodyText);
-                        } catch (parseError) {
+                        } catch {
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
                                 error: {
@@ -385,7 +381,6 @@ export class MSGraphMCP {
                         // For discovery requests (initialize, tools/list, ping), don't require auth
                         if (body.method === 'initialize' || body.method === 'tools/list' || body.method === 'ping') {
                             logger.info('Processing discovery request', { method: body.method });
-                            const server = mcp.server;
                             
                             if (body.method === 'initialize') {
                                 // Return server capabilities
@@ -635,7 +630,7 @@ export class MSGraphMCP {
 
                             // Only allow authenticated tool calls (unless tool is discovery-type)
                             if (!authHeader || !authHeader.startsWith('Bearer ')) {
-                                const baseUrl = `http://localhost:3001`; // Should be configurable
+                                const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:3001`;
                                 const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
                                 return new Response(JSON.stringify({
                                     jsonrpc: '2.0',
@@ -714,7 +709,7 @@ export class MSGraphMCP {
 
                         // For tool calls, require authentication
                         if (!authHeader || !authHeader.startsWith("Bearer ")) {
-                            const baseUrl = `http://localhost:3001`; // Should be configurable
+                            const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:3001`;
                             const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
@@ -880,7 +875,7 @@ export class MSGraphMCP {
                                 // If no valid token, provide OAuth URL for authentication
                                 let oauthUrl = null;
                                 if (!tokenStatus || tokenStatus.isExpired || authMode === 'Not initialized') {
-                                    const baseUrl = `http://localhost:3001`; // Should be configurable
+                                    const baseUrl = process.env.PUBLIC_BASE_URL || `http://localhost:3001`;
                                     oauthUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
                                 }
 
