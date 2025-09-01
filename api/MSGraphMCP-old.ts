@@ -1,7 +1,7 @@
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js'
 import {z} from 'zod'
 import {MSGraphService, AuthManager, AuthMode, AuthConfig} from "./MSGraphService.js";
-import {MSGraphAuthContext, Env} from "../types";
+import {MSGraphAuthContext, Env} from "../types.js";
 import logger from './lib/logger.js';
 
 /**

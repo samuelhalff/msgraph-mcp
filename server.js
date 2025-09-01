@@ -404,14 +404,15 @@ app.post('/logout', (c) => {
 app.route('/mcp', new Hono().mount('/', MSGraphMCP.serve('/mcp', { binding: 'MSGRAPH_MCP_OBJECT' }).fetch))
 
 // SSE route for streaming connections
-app.use('/sse/*', async (c, next) => {
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return c.json({ error: 'Missing or invalid Authorization header' }, 401);
-    }
-    await next();
-});
-app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE('/sse', { binding: 'MSGRAPH_MCP_OBJECT' }).fetch))
+// SSE route for streaming connections - commented out as serveSSE method doesn't exist
+// app.use('/sse/*', async (c, next) => {
+//     const authHeader = c.req.header('Authorization');
+//     if (!authHeader || !authHeader.startsWith('Bearer ')) {
+//         return c.json({ error: 'Missing or invalid Authorization header' }, 401);
+//     }
+//     await next();
+// });
+// app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE('/sse', { binding: 'MSGRAPH_MCP_OBJECT' }).fetch))
 
 // Health check endpoint
 app.get('/health', (c) => {
