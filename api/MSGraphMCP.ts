@@ -634,8 +634,10 @@ export class MSGraphMCP {
 
                             // Only allow authenticated tool calls (unless tool is discovery-type)
                             if (!authHeader || !authHeader.startsWith('Bearer ')) {
-                                const baseUrl = (process.env.PUBLIC_BASE_URL || `http://localhost:3001`).replace(/\/$/, '');
-                                const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
+                                // Use the request URL to construct the local OAuth discovery URL
+                                const requestUrl = new URL(request.url);
+                                const localBaseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
+                                const oauthDiscoveryUrl = `${localBaseUrl}/.well-known/oauth-authorization-server`;
                                 return new Response(JSON.stringify({
                                     jsonrpc: '2.0',
                                     id: body.id,
@@ -712,8 +714,10 @@ export class MSGraphMCP {
 
                         // For tool calls, require authentication
                         if (!authHeader || !authHeader.startsWith("Bearer ")) {
-                            const baseUrl = (process.env.PUBLIC_BASE_URL || `http://localhost:3001`).replace(/\/$/, '');
-                            const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
+                            // Use the request URL to construct the local OAuth discovery URL
+                            const requestUrl = new URL(request.url);
+                            const localBaseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
+                            const oauthDiscoveryUrl = `${localBaseUrl}/.well-known/oauth-authorization-server`;
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
                                 error: {
@@ -1175,8 +1179,10 @@ export class MSGraphMCP {
 
                         // For tool calls, require authentication
                         if (!authHeader || !authHeader.startsWith('Bearer ')) {
-                            const baseUrl = (process.env.PUBLIC_BASE_URL || `http://localhost:3001`).replace(/\/$/, '');
-                            const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
+                            // Use the request URL to construct the local OAuth discovery URL
+                            const requestUrl = new URL(request.url);
+                            const localBaseUrl = `${requestUrl.protocol}//${requestUrl.host}`;
+                            const oauthDiscoveryUrl = `${localBaseUrl}/.well-known/oauth-authorization-server`;
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
                                 error: {
