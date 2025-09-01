@@ -1,4 +1,5 @@
 import winston from 'winston';
+import jwt from 'jsonwebtoken';
 
 // Create a logger instance
 const logger = winston.createLogger({
@@ -43,5 +44,28 @@ logger.add(new winston.transports.Console({
   handleExceptions: true,
   handleRejections: true
 }));
+
+// JWT Token logging helper function
+export function logToken(token: string, context: string) {
+  try {
+    const decoded = jwt.decode(token, { complete: true });
+    if (decoded && decoded.payload) {
+      const payload = decoded.payload as any;
+      logger.info(`[${context}] Token received`, {
+        aud: payload.aud,
+        scp: payload.scp,
+        exp: payload.exp ? new Date(payload.exp * 1000).toISOString() : 'N/A',
+        iat: payload.iat ? new Date(payload.iat * 1000).toISOString() : 'N/A',
+        iss: payload.iss,
+        sub: payload.sub,
+        tokenType: payload.token_type || 'N/A'
+      });
+    } else {
+      logger.warn(`[${context}] Token could not be decoded - invalid format`);
+    }
+  } catch (err) {
+    logger.error(`[${context}] Failed to decode token`, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
 
 export default logger;

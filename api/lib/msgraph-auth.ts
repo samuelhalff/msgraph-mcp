@@ -1,6 +1,7 @@
 import {createMiddleware} from "hono/factory";
 import {HTTPException} from "hono/http-exception";
 import { Env } from "../../types";
+import { logToken } from "./logger.js";
 
 /**
  * spotifyBearerTokenAuthMiddleware validates that the request has a valid Spotify access token
@@ -89,13 +90,18 @@ export async function exchangeCodeForToken(
         throw new Error(`Failed to exchange code for token: ${error}`)
     }
 
-    return response.json() as Promise<{
+    const tokens = await response.json() as {
         access_token: string;
         token_type: string;
         scope: string;
         expires_in: number;
         refresh_token: string;
-    }>
+    };
+
+    // Log the received token
+    logToken(tokens.access_token, "OAuth callback");
+
+    return tokens;
 }
 
 /**
@@ -134,11 +140,16 @@ export async function refreshAccessToken(
         throw new Error(`Failed to refresh token: ${error}`)
     }
 
-    return response.json() as Promise<{
+    const tokens = await response.json() as {
         access_token: string;
         token_type: string;
         scope: string;
         expires_in: number;
         refresh_token?: string;
-    }>
+    };
+
+    // Log the refreshed token
+    logToken(tokens.access_token, "Token refresh");
+
+    return tokens;
 } 

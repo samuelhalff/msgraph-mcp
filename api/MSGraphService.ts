@@ -18,7 +18,7 @@ export class AuthManager {
   }-explicit-any */
 import { Client, PageIterator, PageCollection } from "@microsoft/microsoft-graph-client";
 import { InteractiveBrowserCredential, ClientSecretCredential, ClientCertificateCredential } from "@azure/identity";
-import logger from "./lib/logger.js";
+import logger, { logToken } from "./lib/logger.js";
 import { Env } from "../types";
 
 // Note: In Cloudflare Workers, fetch is already available globally
@@ -191,6 +191,10 @@ export class AuthManager {
       };
     }
   }
+
+  getCurrentAccessToken(): string | null {
+    return this.accessToken;
+  }
 }
 
 export class MSGraphService {
@@ -238,6 +242,14 @@ export class MSGraphService {
         }
         
         const effectiveVersion = graphApiVersion || (this.useGraphBeta ? 'beta' : 'v1.0')
+        
+        // Log JWT token before making Graph API request
+        const currentToken = this.authManager.getCurrentAccessToken();
+        if (currentToken) {
+            logToken(currentToken, `Graph API call: ${method.toUpperCase()} ${path}`);
+        } else {
+            logger.warn('No access token available for Graph API call', { path, method });
+        }
         
         try {
             let request = this.getGraphClient().api(path).version(effectiveVersion)
@@ -300,6 +312,12 @@ export class MSGraphService {
                     this.graphClient = Client.initWithMiddleware({
                         authProvider: authProvider,
                     })
+                    
+                    // Log the refreshed token
+                    const refreshedToken = this.authManager.getCurrentAccessToken();
+                    if (refreshedToken) {
+                        logToken(refreshedToken, `Graph API retry after refresh: ${method.toUpperCase()} ${path}`);
+                    }
                     
                     // Retry the request with refreshed token
                     let request = this.getGraphClient().api(path).version(effectiveVersion)
