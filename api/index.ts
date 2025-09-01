@@ -280,12 +280,16 @@ app.post("/logout", (c) => {
   return c.json({ message: "Logged out successfully" });
 });
 
-// MCP route - simplified to use MCP SDK's built-in discovery handling
-app.route('/mcp', new Hono().mount('/', MSGraphMCP.serve().fetch))
+app.all('/mcp', async (c) => {
+    // MSGraphMCP.serve() returns our main fetch handler function.
+    const mcpFetchHandler = MSGraphMCP.serve().fetch;
+    // We call it with the raw Request object from the Hono context.
+    return await mcpFetchHandler(c.req.raw);
+});
 
-// SSE route for streaming connections
-app.use('/sse/*', msGraphBearerTokenAuthMiddleware)
-app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE().fetch))
+// SSE route for streaming connections - commented out as serveSSE method doesn't exist
+// app.use('/sse/*', msGraphBearerTokenAuthMiddleware)
+// app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE().fetch))
 
 // Health check endpoint
 app.get("/health", (c) => {
