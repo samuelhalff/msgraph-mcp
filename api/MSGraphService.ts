@@ -1,569 +1,275 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Client, PageIterator, PageCollection } from "@microsoft/microsoft-graph-client";
-import { InteractiveBrowserCredential, ClientSecretCredential, ClientCertificateCredential } from "@azure/identity";
-import logger, { logToken } from "./lib/logger.js";
-import { Env, MSGraphAuthContext } from "../types";
+import { Client, ClientOptions } from '@microsoft/microsoft-graph-client';
+import { TokenCredentialAuthenticationProvider } from '@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials';
+import { AuthCodeMSALBrowserAuthenticationProvider, AuthCodeMSALBrowserAuthenticationProviderOptions } from '@microsoft/microsoft-graph-client/authProviders/authCodeMsalBrowser';
+import { ClientCertificateCredential, ClientSecretCredential } from '@azure/identity';
+import { PublicClientApplication, InteractionType } from '@azure/msal-browser';
+import { Env, MSGraphAuthContext } from '../types.js';
+import logger from './lib/logger.js';
 
-export enum AuthMode {
-  ClientCredentials = "ClientCredentials",
-  Certificate = "Certificate",
-  Interactive = "Interactive",
-  ClientProvidedToken = "ClientProvidedToken"
-}
-
-export interface AuthConfig {
-  mode: AuthMode;
-  tenantId?: string;
-  clientId?: string;
+// Custom options interface to include all required properties
+interface MSGraphServiceOptions extends ClientOptions, Partial<AuthCodeMSALBrowserAuthenticationProviderOptions> {
+  tenantId: string;
+  clientId: string;
   clientSecret?: string;
-  accessToken?: string;
   redirectUri?: string;
   certificatePath?: string;
   certificatePassword?: string;
-}
-
-export class AuthManager {
-  private config: AuthConfig;
-  private credential: InteractiveBrowserCredential | ClientSecretCredential | ClientCertificateCredential | null = null;
-  private accessToken: string | null = null;
-  private refreshToken: string | null = null;
-  private tokenExpiration: Date | null = null;
-
-  constructor(config: AuthConfig) {
-    this.config = config;
-  }
-
-  async initialize() {
-    switch (this.config.mode) {
-      case AuthMode.ClientCredentials:
-        if (!this.config.tenantId || !this.config.clientId || !this.config.clientSecret) {
-          throw new Error("Tenant ID, Client ID, and Client Secret are required for ClientCredentials mode");
-        }
-        this.credential = new ClientSecretCredential(
-          this.config.tenantId,
-          this.config.clientId,
-          this.config.clientSecret
-        );
-        break;
-      case AuthMode.Certificate:
-        if (!this.config.certificatePath) {
-          throw new Error("Certificate path is required for certificate authentication");
-        }
-        if (!this.config.tenantId || !this.config.clientId) {
-          throw new Error("Tenant ID and Client ID are required for Certificate mode");
-        }
-        this.credential = new ClientCertificateCredential(
-          this.config.tenantId,
-          this.config.clientId,
-          this.config.certificatePath
-        );
-        break;
-      case AuthMode.Interactive:
-        if (!this.config.tenantId || !this.config.clientId || !this.config.redirectUri) {
-          throw new Error("Tenant ID, Client ID, and Redirect URI are required for Interactive mode");
-        }
-        this.credential = new InteractiveBrowserCredential({
-          tenantId: this.config.tenantId,
-          clientId: this.config.clientId,
-          redirectUri: this.config.redirectUri
-        });
-        break;
-      case AuthMode.ClientProvidedToken:
-        if (this.config.accessToken) {
-          this.accessToken = this.config.accessToken;
-        } else {
-          throw new Error("Access token is required for ClientProvidedToken mode");
-        }
-        break;
-    }
-  }
-
-  getAuthMode(): AuthMode {
-    return this.config.mode;
-  }
-
-  getAzureCredential() {
-    return this.credential;
-  }
-
-  getGraphAuthProvider() {
-    return {
-      getAccessToken: async () => {
-        if (this.config.mode === AuthMode.ClientProvidedToken) {
-          if (!this.accessToken) {
-            throw new Error("No access token available");
-          }
-          return this.accessToken;
-        }
-
-        if (!this.credential) {
-          throw new Error("Credential not initialized");
-        }
-        const tokenResponse = await this.credential.getToken("https://graph.microsoft.com/.default");
-        if (!tokenResponse || !tokenResponse.token) {
-          throw new Error("Failed to acquire access token");
-        }
-        return tokenResponse.token;
-      }
-    };
-  }
-
-  updateAccessToken(token: string, expiration?: Date, refreshToken?: string) {
-    this.accessToken = token;
-    this.tokenExpiration = expiration || new Date(Date.now() + 3600000); // 1 hour default
-    if (refreshToken) {
-      this.refreshToken = refreshToken;
-    }
-  }
-
-  async refreshAccessToken(): Promise<void> {
-    if (!this.refreshToken) {
-      throw new Error('No refresh token available');
-    }
-
-    const tenantId = this.config.tenantId || 'common';
-    const response = await fetch(`https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        refresh_token: this.refreshToken,
-        client_id: this.config.clientId || '',
-        client_secret: this.config.clientSecret || '',
-        scope: 'https://graph.microsoft.com/.default'
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to refresh access token: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json() as {
-      access_token: string;
-      refresh_token?: string;
-      expires_in: number;
-      scope: string;
-      token_type: string;
-    };
-    this.accessToken = data.access_token;
-    if (data.refresh_token) {
-      this.refreshToken = data.refresh_token;
-    }
-    this.tokenExpiration = new Date(Date.now() + (data.expires_in * 1000));
-  }
-
-  async getTokenStatus() {
-    if (this.config.mode === AuthMode.ClientProvidedToken) {
-      return {
-        isExpired: this.tokenExpiration ? new Date() > this.tokenExpiration : false,
-        scopes: ["User provided token - scopes unknown"],
-        expiresOn: this.tokenExpiration?.toISOString()
-      };
-    }
-
-    try {
-      if (!this.credential) {
-        throw new Error("Credential not initialized");
-      }
-      const token = await this.credential.getToken("https://graph.microsoft.com/.default");
-      return {
-        isExpired: token.expiresOnTimestamp ? Date.now() > token.expiresOnTimestamp * 1000 : false,
-        scopes: ["https://graph.microsoft.com/.default"],
-        expiresOn: token.expiresOnTimestamp ? new Date(token.expiresOnTimestamp * 1000).toISOString() : undefined
-      };
-    } catch (error) {
-      return {
-        isExpired: true,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  }
-
-  getCurrentAccessToken(): string | null {
-    return this.accessToken;
-  }
+  mode: 'ClientProvidedToken' | 'Certificate' | 'Interactive' | 'ClientCredentials';
 }
 
 export class MSGraphService {
-  private env: Env;
-  private authManager: AuthManager;
-  private graphClient: Client | null = null;
-  private useGraphBeta: boolean;
+  private client: Client;
 
-  constructor(env: Env, authContext: MSGraphAuthContext, authConfig: AuthConfig) {
-    this.env = env;
-    this.useGraphBeta = env.USE_GRAPH_BETA !== 'false';
-    this.authManager = new AuthManager(authConfig);
-    
-    if (authConfig.mode === AuthMode.ClientProvidedToken && authContext.accessToken) {
-      this.authManager.updateAccessToken(authContext.accessToken, undefined, authContext.refreshToken);
+  constructor(
+    private env: Env,
+    private auth: MSGraphAuthContext,
+    options: MSGraphServiceOptions
+  ) {
+    logger.info('Initializing MSGraphService', { env: { ...env, CLIENT_SECRET: '[REDACTED]', ACCESS_TOKEN: '[REDACTED]' }, auth: { ...auth, accessToken: '[REDACTED]' } });
+
+    if (!env.TENANT_ID || !env.CLIENT_ID) {
+      logger.error('Missing required environment variables', { TENANT_ID: env.TENANT_ID, CLIENT_ID: env.CLIENT_ID });
+      throw new Error('TENANT_ID and CLIENT_ID must be set');
     }
-  }
 
-  async initialize() {
-    await this.authManager.initialize();
-    const authProvider = this.authManager.getGraphAuthProvider();
-    this.graphClient = Client.initWithMiddleware({
-      authProvider: authProvider,
-    });
-  }
+    let authProvider;
 
-  private getGraphClient(): Client {
-    if (!this.graphClient) {
-      throw new Error("Graph client not initialized");
-    }
-    return this.graphClient;
-  }
-
-  async makeGraphRequest(
-    path: string, 
-    method: 'get' | 'post' | 'put' | 'patch' | 'delete' = 'get',
-    body?: any,
-    queryParams?: Record<string, string>,
-    graphApiVersion?: 'v1.0' | 'beta',
-    fetchAll: boolean = false,
-    consistencyLevel?: string
-  ): Promise<any> {
-    if (!path || typeof path !== 'string') {
-      throw new Error('Path is required and must be a string for Graph API queries');
-    }
-    
-    const effectiveVersion = graphApiVersion || (this.useGraphBeta ? 'beta' : 'v1.0');
-    
-    // Log JWT token before making Graph API request
-    const currentToken = this.authManager.getCurrentAccessToken();
-    if (currentToken) {
-      logToken(currentToken, `Graph API call: ${method.toUpperCase()} ${path}`);
+    if (options.mode === 'ClientProvidedToken') {
+      logger.info('Using ClientProvidedToken mode');
+      if (!auth.accessToken) {
+        logger.error('No access token provided in ClientProvidedToken mode');
+        throw new Error('Access token required for ClientProvidedToken mode');
+      }
+      authProvider = {
+        getAccessToken: async () => {
+          logger.info('Providing client-provided access token');
+          return auth.accessToken;
+        },
+      };
+    } else if (options.mode === 'Certificate') {
+      logger.info('Using Certificate mode');
+      if (!options.certificatePath || !options.certificatePassword) {
+        logger.error('Certificate path or password missing');
+        throw new Error('Certificate path and password required');
+      }
+      const credential = new ClientCertificateCredential(options.tenantId, options.clientId, {
+        certificatePath: options.certificatePath,
+        certificatePassword: options.certificatePassword,
+      });
+      authProvider = new TokenCredentialAuthenticationProvider(credential, {
+        scopes: env.OAUTH_SCOPES?.split(' ') ?? ['https://graph.microsoft.com/.default'],
+      });
+    } else if (options.mode === 'Interactive') {
+      logger.info('Using Interactive mode');
+      // For browser-based authentication, we need to use MSAL browser library
+      const msalConfig = {
+        auth: {
+          clientId: options.clientId,
+          authority: `https://login.microsoftonline.com/${options.tenantId}`,
+          redirectUri: options.redirectUri ?? env.REDIRECT_URI ?? 'http://mcp-server:3001/authorize',
+        },
+      };
+      const msalInstance = new PublicClientApplication(msalConfig);
+      authProvider = new AuthCodeMSALBrowserAuthenticationProvider(msalInstance, {
+        scopes: env.OAUTH_SCOPES?.split(' ') ?? ['https://graph.microsoft.com/.default'],
+        interactionType: InteractionType.Popup,
+        account: null as any, // Will be set by MSAL during authentication
+      });
     } else {
-      logger.warn('No access token available for Graph API call', { path, method });
+      logger.info('Using ClientCredentials mode');
+      if (!options.clientSecret) {
+        logger.error('Client secret missing for ClientCredentials mode');
+        throw new Error('Client secret required for ClientCredentials mode');
+      }
+      const credential = new ClientSecretCredential(options.tenantId, options.clientId, options.clientSecret);
+      authProvider = new TokenCredentialAuthenticationProvider(credential, {
+        scopes: env.OAUTH_SCOPES?.split(' ') ?? ['https://graph.microsoft.com/.default'],
+      });
     }
-    
-    try {
-      let request = this.getGraphClient().api(path).version(effectiveVersion);
 
-      if (queryParams && Object.keys(queryParams).length > 0) {
-        request = request.query(queryParams);
-      }
-
-      if (consistencyLevel) {
-        request = request.header('ConsistencyLevel', consistencyLevel);
-      }
-
-      switch (method.toLowerCase()) {
-        case 'get':
-          if (fetchAll) {
-            const firstPageResponse: PageCollection = await request.get();
-            const odataContext = firstPageResponse['@odata.context'];
-            const allItems: any[] = firstPageResponse.value || [];
-            
-            const callback = (item: any) => {
-              allItems.push(item);
-              return true;
-            };
-
-            const pageIterator = new PageIterator(this.getGraphClient(), firstPageResponse, callback);
-            await pageIterator.iterate();
-
-            return {
-              '@odata.context': odataContext,
-              value: allItems
-            };
-          } else {
-            return await request.get();
-          }
-        case 'post':
-          return await request.post(body ?? {});
-        case 'put':
-          return await request.put(body ?? {});
-        case 'patch':
-          return await request.patch(body ?? {});
-        case 'delete': {
-          const result = await request.delete();
-          return result === undefined || result === null ? { status: "Success (No Content)" } : result;
-        }
-        default:
-          throw new Error(`Unsupported method: ${method}`);
-      }
-    } catch (error: any) {
-      // Handle 401 Unauthorized - try to refresh token and retry
-      if (error.statusCode === 401 || error.code === 'InvalidAuthenticationToken' || 
-          (error.message && error.message.includes('401'))) {
-        
-        logger.info('Received 401 error, attempting to refresh token...');
-        
-        try {
-          // Try to refresh the token
-          await this.authManager.refreshAccessToken();
-          
-          // Reinitialize the Graph client with new token
-          const authProvider = this.authManager.getGraphAuthProvider();
-          this.graphClient = Client.initWithMiddleware({
-            authProvider: authProvider,
-          });
-          
-          // Log the refreshed token
-          const refreshedToken = this.authManager.getCurrentAccessToken();
-          if (refreshedToken) {
-            logToken(refreshedToken, `Graph API retry after refresh: ${method.toUpperCase()} ${path}`);
-          }
-          
-          // Retry the request with refreshed token
-          let request = this.getGraphClient().api(path).version(effectiveVersion);
-
-          if (queryParams && Object.keys(queryParams).length > 0) {
-            request = request.query(queryParams);
-          }
-
-          if (consistencyLevel) {
-            request = request.header('ConsistencyLevel', consistencyLevel);
-          }
-
-          switch (method.toLowerCase()) {
-            case 'get':
-              if (fetchAll) {
-                const firstPageResponse: PageCollection = await request.get();
-                const odataContext = firstPageResponse['@odata.context'];
-                const allItems: any[] = firstPageResponse.value || [];
-                
-                const callback = (item: any) => {
-                  allItems.push(item);
-                  return true;
-                };
-
-                const pageIterator = new PageIterator(this.getGraphClient(), firstPageResponse, callback);
-                await pageIterator.iterate();
-
-                return {
-                  '@odata.context': odataContext,
-                  value: allItems
-                };
-              } else {
-                return await request.get();
-              }
-            case 'post':
-              return await request.post(body ?? {});
-            case 'put':
-              return await request.put(body ?? {});
-            case 'patch':
-              return await request.patch(body ?? {});
-            case 'delete': {
-              const result = await request.delete();
-              return result === undefined || result === null ? { status: "Success (No Content)" } : result;
-            }
-            default:
-              throw new Error(`Unsupported method: ${method}`);
-          }
-        } catch (refreshError) {
-          logger.error('Failed to refresh token:', refreshError);
-          throw new Error(`Authentication failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
-        }
-      }
-      
-      // Re-throw the original error if it's not a 401
-      throw error;
-    }
+    this.client = Client.initWithMiddleware({ authProvider });
+    logger.info('MSGraphService client initialized');
   }
 
-  // User methods
-  async getCurrentUserProfile(): Promise<any> {
-    return this.makeGraphRequest('/me');
-  }
-
-  async getUsers(queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest('/users', 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  async getUser(userId: string): Promise<any> {
-    return this.makeGraphRequest(`/users/${userId}`);
-  }
-
-  // Groups methods
-  async getGroups(queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest('/groups', 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  async getGroup(groupId: string): Promise<any> {
-    return this.makeGraphRequest(`/groups/${groupId}`);
-  }
-
-  async getGroupMembers(groupId: string, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest(`/groups/${groupId}/members`, 'get', undefined, undefined, undefined, fetchAll);
-  }
-
-  // Directory objects
-  async getDirectoryObjects(queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest('/directoryObjects', 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  // Applications
-  async getApplications(queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest('/applications', 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  async getApplication(appId: string): Promise<any> {
-    return this.makeGraphRequest(`/applications/${appId}`);
-  }
-
-  // Service principals
-  async getServicePrincipals(queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest('/servicePrincipals', 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  // Mail methods
-  async getMessages(userId: string = 'me', queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest(`/users/${userId}/messages`, 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  async sendMail(userId: string = 'me', message: any): Promise<any> {
-    return this.makeGraphRequest(`/users/${userId}/sendMail`, 'post', { message });
-  }
-
-  // Calendar methods
-  async getEvents(userId: string = 'me', queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest(`/users/${userId}/events`, 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  async createEvent(userId: string = 'me', event: any): Promise<any> {
-    return this.makeGraphRequest(`/users/${userId}/events`, 'post', event);
-  }
-
-  // OneDrive/SharePoint methods
-  async getDriveItems(userId: string = 'me', itemId?: string, queryParams?: Record<string, string>): Promise<any> {
-    const path = itemId ? `/users/${userId}/drive/items/${itemId}` : `/users/${userId}/drive/root/children`;
-    return this.makeGraphRequest(path, 'get', undefined, queryParams);
-  }
-
-  // Teams methods
-  async getTeams(queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest('/teams', 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  async getTeamChannels(teamId: string, queryParams?: Record<string, string>, fetchAll: boolean = false): Promise<any> {
-    return this.makeGraphRequest(`/teams/${teamId}/channels`, 'get', undefined, queryParams, undefined, fetchAll);
-  }
-
-  // Generic method for any Graph API endpoint
   async genericGraphRequest(
     path: string,
-    method: 'get' | 'post' | 'put' | 'patch' | 'delete' = 'get',
+    method: string,
     body?: any,
     queryParams?: Record<string, string>,
-    graphApiVersion?: 'v1.0' | 'beta',
-    fetchAll: boolean = false,
+    version: 'v1.0' | 'beta' = 'v1.0',
+    fetchAll = false,
     consistencyLevel?: string
   ): Promise<any> {
-    return this.makeGraphRequest(path, method, body, queryParams, graphApiVersion, fetchAll, consistencyLevel);
+    logger.info('Executing genericGraphRequest', { path, method, version, fetchAll, consistencyLevel });
+    try {
+      const request = this.client.api(path).version(version);
+      if (queryParams) {
+        request.query(queryParams);
+      }
+      if (consistencyLevel) {
+        request.header('ConsistencyLevel', consistencyLevel);
+      }
+
+      let response;
+      switch (method.toLowerCase()) {
+        case 'get':
+          response = await request.get();
+          break;
+        case 'post':
+          response = await request.post(body);
+          break;
+        case 'put':
+          response = await request.put(body);
+          break;
+        case 'patch':
+          response = await request.patch(body);
+          break;
+        case 'delete':
+          response = await request.delete();
+          break;
+        default:
+          logger.error('Invalid HTTP method', { method });
+          throw new Error(`Invalid HTTP method: ${method}`);
+      }
+
+      if (fetchAll && response['@odata.nextLink']) {
+        logger.info('Fetching all pages for Graph request', { nextLink: response['@odata.nextLink'] });
+        const allResults = response.value ? [...response.value] : [];
+        let nextLink = response['@odata.nextLink'];
+        while (nextLink) {
+          const nextResponse = await this.client.api(nextLink).get();
+          if (nextResponse.value) {
+            allResults.push(...nextResponse.value);
+          }
+          nextLink = nextResponse['@odata.nextLink'];
+        }
+        response.value = allResults;
+      }
+
+      logger.info('genericGraphRequest successful', { path, method });
+      return response;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error('genericGraphRequest error', { msg, path, method });
+      throw new Error(msg);
+    }
   }
 
-  // Azure Resource Management requests (management.azure.com)
   async azureRequest(
     path: string,
-    method: 'get' | 'post' | 'put' | 'patch' | 'delete' = 'get',
+    method: string,
     body?: any,
     queryParams?: Record<string, string>,
     apiVersion?: string,
     subscriptionId?: string,
-    fetchAll: boolean = false
+    fetchAll = false
   ): Promise<any> {
-    if (!this.authManager) {
-      throw new Error('Auth manager not initialized');
-    }
-
-    const azureCredential = this.authManager.getAzureCredential();
-    if (!azureCredential || typeof azureCredential.getToken !== 'function') {
-      throw new Error('Azure credential not available for Azure Resource Management requests');
-    }
-
-    if (!apiVersion) {
-      throw new Error('API version is required for Azure Resource Management queries');
-    }
-
-    if (!path || typeof path !== 'string') {
-      throw new Error('Path is required and must be a string for Azure Resource Management queries');
-    }
-
-    const tokenResponse = await azureCredential.getToken('https://management.azure.com/.default');
-    if (!tokenResponse || !tokenResponse.token) {
-      throw new Error('Failed to acquire Azure access token');
-    }
-
-    const base = 'https://management.azure.com';
-    let url = base;
-    if (subscriptionId) {
-      url += `/subscriptions/${subscriptionId}`;
-    }
-    url += path.startsWith('/') ? path : `/${path}`;
-
-    const urlParams = new URLSearchParams({ 'api-version': apiVersion });
-    if (queryParams) {
-      for (const [key, value] of Object.entries(queryParams)) {
-        urlParams.append(String(key), String(value));
-      }
-    }
-
-    url += `?${urlParams.toString()}`;
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${tokenResponse.token}`,
-      'Content-Type': 'application/json'
-    };
-
-    const requestOptions: RequestInit = {
-      method: method.toUpperCase(),
-      headers: headers
-    };
-
-    if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
-      requestOptions.body = body ? JSON.stringify(body) : JSON.stringify({});
-    }
-
-    // Pagination for Azure RM
-    if (fetchAll && method === 'get') {
-      let allValues: any[] = [];
-      let currentUrl: string | null = url;
-
-      while (currentUrl) {
-        const resp = await fetch(currentUrl, requestOptions);
-        const text = await resp.text();
-        let pageData: any = {};
-        try {
-          pageData = text ? JSON.parse(text) : {};
-        } catch {
-          pageData = { rawResponse: text };
-        }
-
-        if (!resp.ok) {
-          throw new Error(`API error (${resp.status}) for Azure RM: ${JSON.stringify(pageData)}`);
-        }
-
-        if (Array.isArray(pageData.value)) {
-          allValues = allValues.concat(pageData.value);
-        } else if (currentUrl === url && !pageData.nextLink) {
-          allValues.push(pageData);
-        }
-
-        currentUrl = pageData.nextLink || null;
-      }
-
-      return { allValues };
-    }
-
-    // Single request
-    const apiResponse = await fetch(url, requestOptions);
-    const responseText = await apiResponse.text();
-    let responseData: any;
+    logger.info('Executing azureRequest', { path, method, apiVersion, subscriptionId, fetchAll });
     try {
-      responseData = responseText ? JSON.parse(responseText) : {};
-    } catch {
-      responseData = { rawResponse: responseText };
-    }
+      let fullPath = subscriptionId ? `/subscriptions/${subscriptionId}${path}` : path;
+      if (apiVersion) {
+        fullPath = `${fullPath}${fullPath.includes('?') ? '&' : '?'}api-version=${apiVersion}`;
+      }
+      const request = this.client.api(fullPath);
+      if (queryParams) {
+        request.query(queryParams);
+      }
 
-    if (!apiResponse.ok) {
-      throw new Error(`API error (${apiResponse.status}) for Azure RM: ${JSON.stringify(responseData)}`);
-    }
+      let response;
+      switch (method.toLowerCase()) {
+        case 'get':
+          response = await request.get();
+          break;
+        case 'post':
+          response = await request.post(body);
+          break;
+        case 'put':
+          response = await request.put(body);
+          break;
+        case 'patch':
+          response = await request.patch(body);
+          break;
+        case 'delete':
+          response = await request.delete();
+          break;
+        default:
+          logger.error('Invalid HTTP method', { method });
+          throw new Error(`Invalid HTTP method: ${method}`);
+      }
 
-    return responseData;
+      if (fetchAll && response['@odata.nextLink']) {
+        logger.info('Fetching all pages for Azure request', { nextLink: response['@odata.nextLink'] });
+        const allResults = response.value ? [...response.value] : [];
+        let nextLink = response['@odata.nextLink'];
+        while (nextLink) {
+          const nextResponse = await this.client.api(nextLink).get();
+          if (nextResponse.value) {
+            allResults.push(...nextResponse.value);
+          }
+          nextLink = nextResponse['@odata.nextLink'];
+        }
+        response.value = allResults;
+      }
+
+      logger.info('azureRequest successful', { path, method });
+      return response;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error('azureRequest error', { msg, path, method });
+      throw new Error(msg);
+    }
+  }
+
+  async getCurrentUserProfile(): Promise<any> {
+    logger.info('Executing getCurrentUserProfile');
+    try {
+      const response = await this.genericGraphRequest('/me', 'get');
+      logger.info('getCurrentUserProfile successful');
+      return response;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error('getCurrentUserProfile error', { msg });
+      throw new Error(msg);
+    }
+  }
+
+  async getUsers(queryParams?: Record<string, string>, fetchAll = false): Promise<any> {
+    logger.info('Executing getUsers', { queryParams, fetchAll });
+    try {
+      const response = await this.genericGraphRequest('/users', 'get', undefined, queryParams, 'v1.0', fetchAll);
+      logger.info('getUsers successful');
+      return response;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error('getUsers error', { msg });
+      throw new Error(msg);
+    }
+  }
+
+  async getGroups(queryParams?: Record<string, string>, fetchAll = false): Promise<any> {
+    logger.info('Executing getGroups', { queryParams, fetchAll });
+    try {
+      const response = await this.genericGraphRequest('/groups', 'get', undefined, queryParams, 'v1.0', fetchAll);
+      logger.info('getGroups successful');
+      return response;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error('getGroups error', { msg });
+      throw new Error(msg);
+    }
+  }
+
+  async getApplications(queryParams?: Record<string, string>, fetchAll = false): Promise<any> {
+    logger.info('Executing getApplications', { queryParams, fetchAll });
+    try {
+      const response = await this.genericGraphRequest('/applications', 'get', undefined, queryParams, 'v1.0', fetchAll);
+      logger.info('getApplications successful');
+      return response;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.error('getApplications error', { msg });
+      throw new Error(msg);
+    }
   }
 }

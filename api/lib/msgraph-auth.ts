@@ -1,149 +1,114 @@
-import { createMiddleware } from "hono/factory";
-import { HTTPException } from "hono/http-exception";
-import { Env } from "../../types";
-import { logToken } from "./logger.js";
+import { Context, Next } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+import logger from './logger.js';
+import { z } from 'zod';
+import { StatusCode } from 'hono/utils/http-status';
+import { Env } from '../../types.js';
 
-/**
- * msGraphBearerTokenAuthMiddleware validates that the request has a valid Microsoft Graph access token
- * The token is passed in the Authorization header as a Bearer token
- */
-export const msGraphBearerTokenAuthMiddleware = createMiddleware<{
-  Bindings: Env,
-}>(async (c, next) => {
-  const authHeader = c.req.header('Authorization');
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    throw new HTTPException(401, { message: 'Missing or invalid access token' });
-  }
-  const accessToken = authHeader.substring(7);
-
-  // Extract refresh token from a custom header (if provided)
-  const refreshToken = c.req.header('X-Refresh-Token') || '';
-
-  // Store tokens in context for use in MSGraphService
-  (c as any).set('authContext', {
-    accessToken,
-    refreshToken,
-  });
-
-  await next();
+// Define token response schema
+const TokenResponseSchema = z.object({
+  access_token: z.string(),
+  token_type: z.string(),
+  expires_in: z.number().optional(),
+  refresh_token: z.string().optional(),
+  scope: z.string().optional(),
 });
 
-/**
- * Get Microsoft Graph OAuth endpoints
- */
-export function getMSGraphAuthEndpoint(endpoint: string): string {
-  const tenantId = process.env.TENANT_ID || 'common';
-  const endpoints = {
-    authorize: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
-    token: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-  };
-  return endpoints[endpoint as keyof typeof endpoints] || endpoints.authorize;
+type TokenResponse = z.infer<typeof TokenResponseSchema>;
+
+export const msGraphBearerTokenAuthMiddleware = async (c: Context<{ Variables: Env }>, next: Next) => {
+  const authHeader = c.req.header('Authorization');
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    logger.error('Missing or invalid Authorization header', { authHeader: authHeader || 'null' });
+    throw new HTTPException(401, { message: 'Missing or invalid Authorization header' });
+  }
+
+  const token = authHeader.replace('Bearer ', '');
+  try {
+    // Placeholder for token validation (e.g., JWT verification)
+    (c as any).set('msGraphAuth', { accessToken: token });
+    await next();
+  } catch (error) {
+    logger.error('Token validation failed', { error: (error as Error).message });
+    throw new HTTPException(401, { message: 'Invalid token' });
+  }
+};
+
+export function getMSGraphAuthEndpoint(tenantId: string): string {
+  // Build the Microsoft identity authorize endpoint for the given tenant
+  return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`;
 }
 
-/**
- * Exchange authorization code for access token
- */
-export async function exchangeCodeForToken(
-  code: string,
-  redirectUri: string,
-  clientId: string,
-  clientSecret?: string,
-  codeVerifier?: string,
-): Promise<{
-  access_token: string;
-  token_type: string;
-  scope: string;
-  expires_in: number;
-  refresh_token?: string;
-}> {
-  const params = new URLSearchParams({
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: redirectUri,
-    client_id: clientId,
-  });
-
-  if (codeVerifier) {
-    params.append('code_verifier', codeVerifier);
-  }
-
-  if (clientSecret) {
-    params.append('client_secret', clientSecret);
-  }
-
-  const response = await fetch(getMSGraphAuthEndpoint('token'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: params,
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to exchange code for token: ${error}`);
-  }
-
-  const tokens = await response.json() as {
-    access_token: string;
-    token_type: string;
-    scope: string;
-    expires_in: number;
-    refresh_token?: string;
-  };
-
-  logToken(tokens.access_token, "OAuth callback");
-
-  return tokens;
-}
-
-/**
- * Refresh an access token
- */
 export async function refreshAccessToken(
-  refreshToken: string,
-  clientId: string,
-  clientSecret?: string,
-): Promise<{
-  access_token: string;
-  token_type: string;
-  scope: string;
-  expires_in: number;
-  refresh_token?: string;
-}> {
-  const params = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    client_id: clientId,
-  });
+    tenantId: string,
+    refreshToken: string,
+    clientId: string,
+    clientSecret: string
+): Promise<TokenResponse> {
+    const response = await fetch(getMSGraphAuthEndpoint(tenantId), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+            grant_type: 'refresh_token',
+            refresh_token: refreshToken,
+            client_id: clientId,
+            client_secret: clientSecret
+        }).toString()
+    });
 
-  if (clientSecret) {
-    params.append('client_secret', clientSecret);
-  }
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to refresh token: ${error}`);
+    }
 
-  const response = await fetch(getMSGraphAuthEndpoint('token'), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: params,
-  });
+    const data = await response.json();
+    return TokenResponseSchema.parse(data);
+}
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to refresh token: ${error}`);
-  }
+export async function exchangeCodeForToken(
+    code: string,
+    redirectUri: string,
+    clientId: string,
+    clientSecret: string,
+    codeVerifier?: string
+): Promise<TokenResponse> {
+    const tokenEndpoint = `https://login.microsoftonline.com/common/oauth2/v2.0/token`;
 
-  const tokens = await response.json() as {
-    access_token: string;
-    token_type: string;
-    scope: string;
-    expires_in: number;
-    refresh_token?: string;
-  };
+    const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: redirectUri,
+        client_id: clientId,
+        client_secret: clientSecret,
+    });
 
-  logToken(tokens.access_token, "Token refresh");
+    if (codeVerifier) {
+        body.append('code_verifier', codeVerifier);
+    }
 
-  return tokens;
+    const response = await fetch(tokenEndpoint, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: body.toString()
+    });
+
+    if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Failed to exchange code for token: ${error}`);
+    }
+
+    const data = await response.json();
+    return TokenResponseSchema.parse(data);
+}
+
+export function getMicrosoftAuthEndpoint(type: 'authorize' | 'token'): string {
+    if (type === 'authorize') {
+        return 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
+    } else {
+        return 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+    }
 }
