@@ -22,7 +22,10 @@ function getMSGraphAuthEndpoint(type: string): string {
   return endpoints[type as keyof typeof endpoints] || endpoints.authorize;
 }
 
-const msGraphBearerTokenAuthMiddleware = async (c: any, next: () => Promise<void>) => {
+const msGraphBearerTokenAuthMiddleware = async (
+  c: any,
+  next: () => Promise<void>
+) => {
   const authHeader = c.req.header("Authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return c.json({ error: "Missing or invalid Authorization header" }, 401);
@@ -67,7 +70,8 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
       c.req.query()
     )}`
   );
-  const baseUrl = process.env.PUBLIC_BASE_URL || c.req.url.split("/.well-known")[0];
+  const baseUrl =
+    process.env.PUBLIC_BASE_URL || c.req.url.split("/.well-known")[0];
   return c.json({
     issuer: baseUrl,
     authorization_endpoint: `${baseUrl}/authorize`,
@@ -87,7 +91,16 @@ app.get("/.well-known/oauth-authorization-server", (c) => {
       "https://graph.microsoft.com/.default",
     ],
     claims_supported: [
-      "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp",
+      "sub",
+      "iss",
+      "aud",
+      "exp",
+      "iat",
+      "auth_time",
+      "nonce",
+      "acr",
+      "amr",
+      "azp",
     ],
     id_token_signing_alg_values_supported: ["RS256"],
     userinfo_endpoint: `${baseUrl}/userinfo`,
@@ -101,17 +114,23 @@ app.post("/register", async (c) => {
   try {
     const registration = await c.req.json();
     if (!registration.client_name || !registration.redirect_uris) {
-      return c.json({ error: "Missing required fields: client_name, redirect_uris" }, 400);
+      return c.json(
+        { error: "Missing required fields: client_name, redirect_uris" },
+        400
+      );
     }
     const client_id = crypto.randomUUID();
     const client: RegisteredClient = {
       client_id,
       client_name: registration.client_name || "MCP Client",
-      redirect_uris: Array.isArray(registration.redirect_uris) ? registration.redirect_uris : [registration.redirect_uris],
+      redirect_uris: Array.isArray(registration.redirect_uris)
+        ? registration.redirect_uris
+        : [registration.redirect_uris],
       grant_types: registration.grant_types || ["authorization_code"],
       response_types: registration.response_types || ["code"],
       scope: registration.scope || "https://graph.microsoft.com/.default",
-      token_endpoint_auth_method: registration.token_endpoint_auth_method || "none",
+      token_endpoint_auth_method:
+        registration.token_endpoint_auth_method || "none",
       created_at: Date.now(),
       azure_client_id: process.env.CLIENT_ID,
     };
@@ -136,7 +155,10 @@ app.get("/authorize", async (c) => {
   logger.info(`/authorize endpoint hit, ${JSON.stringify(c.req.query())}`);
   const { client_id, redirect_uri } = c.req.query();
   if (!client_id || !redirect_uri) {
-    return c.json({ error: "Missing required parameters: client_id, redirect_uri" }, 400);
+    return c.json(
+      { error: "Missing required parameters: client_id, redirect_uri" },
+      400
+    );
   }
   const client = registeredClients.get(client_id as string);
   if (!client) {
@@ -165,26 +187,48 @@ app.post("/token", async (c) => {
   try {
     const body = await c.req.parseBody();
     const { grant_type, code, redirect_uri, client_id, refresh_token } = body;
-    logger.info(`/token called with grant_type=${grant_type}, client_id=${client_id}, redirect_uri=${redirect_uri}`);
+    logger.info(
+      `/token called with grant_type=${grant_type}, client_id=${client_id}, redirect_uri=${redirect_uri}`
+    );
     if (grant_type === "authorization_code") {
       if (!code || !redirect_uri || !client_id) {
         return c.json({ error: "Missing required parameters" }, 400);
       }
       const regClient = registeredClients.get(client_id as string);
-      const azureClientIdToUse = regClient?.azure_client_id || process.env.CLIENT_ID || "";
-      const tokenAuthMethod = regClient?.token_endpoint_auth_method || "client_secret_post";
-      const secretToSend = tokenAuthMethod === "none" ? undefined : process.env.CLIENT_SECRET || undefined;
-      const tokenResponse = await exchangeCodeForToken(code as string, redirect_uri as string, azureClientIdToUse, secretToSend || "", body.code_verifier as string | undefined);
+      const azureClientIdToUse =
+        regClient?.azure_client_id || process.env.CLIENT_ID || "";
+      const tokenAuthMethod =
+        regClient?.token_endpoint_auth_method || "client_secret_post";
+      const secretToSend =
+        tokenAuthMethod === "none"
+          ? undefined
+          : process.env.CLIENT_SECRET || undefined;
+      const tokenResponse = await exchangeCodeForToken(
+        code as string,
+        redirect_uri as string,
+        azureClientIdToUse,
+        secretToSend || "",
+        body.code_verifier as string | undefined
+      );
       return c.json(tokenResponse);
     } else if (grant_type === "refresh_token") {
       if (!refresh_token) {
         return c.json({ error: "Missing refresh_token" }, 400);
       }
       const regClient = registeredClients.get(client_id as string);
-      const azureClientIdToUse = regClient?.azure_client_id || process.env.CLIENT_ID || "";
-      const tokenAuthMethod = regClient?.token_endpoint_auth_method || "client_secret_post";
-      const secretToSend = tokenAuthMethod === "none" ? undefined : process.env.CLIENT_SECRET || undefined;
-      const tokenResponse = await refreshAccessToken(refresh_token as string, azureClientIdToUse, secretToSend || "");
+      const azureClientIdToUse =
+        regClient?.azure_client_id || process.env.CLIENT_ID || "";
+      const tokenAuthMethod =
+        regClient?.token_endpoint_auth_method || "client_secret_post";
+      const secretToSend =
+        tokenAuthMethod === "none"
+          ? undefined
+          : process.env.CLIENT_SECRET || undefined;
+      const tokenResponse = await refreshAccessToken(
+        refresh_token as string,
+        azureClientIdToUse,
+        secretToSend || ""
+      );
       return c.json(tokenResponse);
     } else {
       return c.json({ error: "Unsupported grant_type" }, 400);
@@ -197,7 +241,11 @@ app.post("/token", async (c) => {
 
 app.get("/userinfo", msGraphBearerTokenAuthMiddleware, async (c) => {
   logger.info(`/userinfo endpoint hit...`);
-  return c.json({ sub: "user-id", name: "User Name", email: "user@example.com" });
+  return c.json({
+    sub: "user-id",
+    name: "User Name",
+    email: "user@example.com",
+  });
 });
 
 app.post("/logout", (c) => {
@@ -209,13 +257,17 @@ app.post("/logout", (c) => {
 // This is the only change from your original file.
 // ========================================================================
 
-// >>>>> THIS IS THE ONLY LINE THAT HAS BEEN ADDED <<<<<
-// By adding this middleware, we ensure that authentication is checked before the main
-// route handler. This completes the routing chain and fixes the 501 error.
-app.use('/mcp', msGraphBearerTokenAuthMiddleware);
+// authorisation middleware stays unchanged
+app.use("/mcp", msGraphBearerTokenAuthMiddleware);
 
-// YOUR ORIGINAL ROUTE DEFINITION IS PRESERVED
-app.route('/mcp', new Hono().mount('/', MSGraphMCP.serve().fetch));
+// NOTE: you can pick any binding name you like, or omit the option object
+app.route(
+  "/mcp",
+  new Hono().mount(
+    "/",
+    (MSGraphMCP as any).serve("/mcp", { binding: "MSGRAPH_MCP_OBJECT" }).fetch
+  )
+);
 
 // Your commented-out SSE route is preserved.
 // app.use('/sse/*', msGraphBearerTokenAuthMiddleware)
