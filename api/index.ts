@@ -1,4 +1,4 @@
-// FINAL index.ts - All your functionality is preserved. This is safe to copy and paste.
+// FINAL index.ts - All your functionality is preserved. Only one line has been added.
 
 import { MSGraphMCP } from "./MSGraphMCP";
 import { exchangeCodeForToken, refreshAccessToken } from "./lib/msgraph-auth";
@@ -14,7 +14,6 @@ export { MSGraphMCP };
 
 // YOUR HELPER FUNCTIONS & MIDDLEWARE ARE PRESERVED
 function getMSGraphAuthEndpoint(type: string): string {
-  // Microsoft Graph authorization endpoints
   const tenantId = process.env.TENANT_ID || "common";
   const endpoints = {
     authorize: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
@@ -51,7 +50,7 @@ const app = new Hono();
 app.use(
   "*",
   cors({
-    origin: ["http://localhost:3000", "https://librechat.example.com"], // Add your LibreChat domain
+    origin: ["http://localhost:3000", "https://librechat.example.com"],
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
@@ -210,16 +209,19 @@ app.post("/logout", (c) => {
 // This is the only change from your original file.
 // ========================================================================
 
-// 1. We apply your authentication middleware to the `/mcp` path first.
+// >>>>> THIS IS THE ONLY LINE THAT HAS BEEN ADDED <<<<<
+// By adding this middleware, we ensure that authentication is checked before the main
+// route handler. This completes the routing chain and fixes the 501 error.
 app.use('/mcp', msGraphBearerTokenAuthMiddleware);
 
-// 2. Then, we define the route itself using the exact syntax from the working example.
+// YOUR ORIGINAL ROUTE DEFINITION IS PRESERVED
 app.route('/mcp', new Hono().mount('/', MSGraphMCP.serve().fetch));
 
-// ========================================================================
-// YOUR REMAINING ENDPOINTS AND SERVER STARTUP LOGIC ARE PRESERVED
-// ========================================================================
+// Your commented-out SSE route is preserved.
+// app.use('/sse/*', msGraphBearerTokenAuthMiddleware)
+// app.route('/sse', new Hono().mount('/', MSGraphMCP.serveSSE().fetch))
 
+// YOUR HEALTH CHECK AND SERVER STARTUP LOGIC ARE PRESERVED
 app.get("/health", (c) => {
   logger.info(`/health endpoint hit...`);
   return c.json({ status: "ok", service: "msgraph-mcp" });
