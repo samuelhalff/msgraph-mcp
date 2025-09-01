@@ -635,7 +635,16 @@ export class MSGraphMCP {
 
                             // Only allow authenticated tool calls (unless tool is discovery-type)
                             if (!authHeader || !authHeader.startsWith('Bearer ')) {
-                                return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, error: { code: -32002, message: 'Authentication required' } }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+                                const baseUrl = `http://localhost:3001`; // Should be configurable
+                                const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
+                                return new Response(JSON.stringify({
+                                    jsonrpc: '2.0',
+                                    id: body.id,
+                                    error: {
+                                        code: -32002,
+                                        message: `OAuth authentication required. Please check the server logs for the authentication URL. OAuth discovery endpoint: ${oauthDiscoveryUrl}`
+                                    }
+                                }), { status: 401, headers: { 'Content-Type': 'application/json' } });
                             }
 
                             try {
@@ -705,11 +714,13 @@ export class MSGraphMCP {
 
                         // For tool calls, require authentication
                         if (!authHeader || !authHeader.startsWith("Bearer ")) {
+                            const baseUrl = `http://localhost:3001`; // Should be configurable
+                            const oauthDiscoveryUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
                             return new Response(JSON.stringify({
                                 jsonrpc: "2.0",
                                 error: {
                                     code: -32002,
-                                    message: "Authentication required"
+                                    message: `OAuth authentication required. Please check the server logs for the authentication URL. OAuth discovery endpoint: ${oauthDiscoveryUrl}`
                                 },
                                 id: body.id
                             }), {
@@ -865,7 +876,21 @@ export class MSGraphMCP {
                                 // Access private authManager via any to avoid type visibility issues
                                 const authMode = (mcp as any).authManager?.getAuthMode ? (mcp as any).authManager.getAuthMode() : 'Not initialized';
                                 const tokenStatus = (mcp as any).authManager ? await (mcp as any).authManager.getTokenStatus() : { isExpired: false };
-                                const status = { authMode, tokenStatus, timestamp: new Date().toISOString() };
+
+                                // If no valid token, provide OAuth URL for authentication
+                                let oauthUrl = null;
+                                if (!tokenStatus || tokenStatus.isExpired || authMode === 'Not initialized') {
+                                    const baseUrl = `http://localhost:3001`; // Should be configurable
+                                    oauthUrl = `${baseUrl}/.well-known/oauth-authorization-server`;
+                                }
+
+                                const status = {
+                                    authMode,
+                                    tokenStatus,
+                                    oauthUrl,
+                                    timestamp: new Date().toISOString(),
+                                    message: oauthUrl ? 'OAuth authentication required. Use the oauthUrl to discover authorization endpoints.' : 'Authentication available'
+                                };
                                 return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] } }), { headers: { 'Content-Type': 'application/json' } });
                             }
 
