@@ -29,6 +29,7 @@ const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "http://localhost:3001";
 const TENANT_ID = process.env.TENANT_ID;
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const REDIRECT_URI = process.env.REDIRECT_URI;
 
 // Validate required environment variables
 if (!TENANT_ID || !CLIENT_ID) {
@@ -92,28 +93,35 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
     ip: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
   });
 
-  // Use public URL for OAuth discovery (required for external clients like LibreChat)
-  const baseUrl = PUBLIC_BASE_URL.replace(/\/$/, "");
-
+    // Use Microsoft Azure endpoints as per MCP standards - from environment variables
+  const tenantId = TENANT_ID;
+  const clientId = CLIENT_ID;
+  const redirectUri = REDIRECT_URI;
+  
+  // Ensure URLs match exactly the format you specified
+  const authorizationUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`;
+  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+  const discoveryUrl = `https://login.microsoftonline.com/${tenantId}/v2.0/.well-known/openid-configuration`;
+  
   const discoveryDoc = {
-    issuer: baseUrl,
-    authorization_endpoint: `${baseUrl}/authorize`,
-    token_endpoint: `${baseUrl}/token`,
-    registration_endpoint: `${baseUrl}/register`,
-    jwks_uri: `${baseUrl}/.well-known/jwks.json`,
-    response_types_supported: ["code"],
-    response_modes_supported: ["query"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
+    issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+    authorization_endpoint: authorizationUrl,
+    token_endpoint: tokenUrl,
+    jwks_uri: `https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`,
+    response_types_supported: ["code", "id_token", "code id_token", "id_token token"],
+    response_modes_supported: ["query", "fragment", "form_post"],
+    grant_types_supported: ["authorization_code", "refresh_token", "implicit"],
     token_endpoint_auth_methods_supported: [
-      "client_secret_basic",
       "client_secret_post",
-      "none",
+      "private_key_jwt",
+      "client_secret_basic"
     ],
     code_challenge_methods_supported: ["S256"],
     scopes_supported: [
       "openid",
       "profile",
       "email",
+      "offline_access",
       "https://graph.microsoft.com/.default",
       "https://graph.microsoft.com/User.Read",
       "https://graph.microsoft.com/User.ReadWrite",
@@ -136,21 +144,39 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
       "aud",
       "exp",
       "iat",
+      "nbf",
       "auth_time",
-      "nonce",
-      "acr",
-      "amr",
-      "azp",
+      "name",
+      "given_name",
+      "family_name",
+      "email",
+      "preferred_username",
+      "tid",
+      "oid",
+      "upn"
     ],
     id_token_signing_alg_values_supported: ["RS256"],
-    userinfo_endpoint: `${baseUrl}/userinfo`,
-    end_session_endpoint: `${baseUrl}/logout`,
+    userinfo_endpoint: `https://graph.microsoft.com/oidc/userinfo`,
+    end_session_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/logout`,
+    // MCP-specific metadata matching your requirements exactly
+    discoveryUrl: discoveryUrl,
+    client_id: clientId,
+    scope: "https://graph.microsoft.com/.default",
+    authorization_url: authorizationUrl,
+    token_url: tokenUrl,
+    redirect_uri: redirectUri,
+    grantType: "authorization_code",
+    responseType: "code",
+    useRefreshTokens: true,
+    usePkce: true
   };
 
   logger.info("OAuth discovery document generated", {
     issuer: discoveryDoc.issuer,
     authEndpoint: discoveryDoc.authorization_endpoint,
     tokenEndpoint: discoveryDoc.token_endpoint,
+    tenantId: tenantId,
+    clientId: discoveryDoc.client_id
   });
 
   return c.json(discoveryDoc);
