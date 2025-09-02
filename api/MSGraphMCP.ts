@@ -3,27 +3,30 @@
  * -------------------------------------------------------------------- */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpAgent } from "agents/mcp";
 import { z } from "zod";
-import { MSGraphService } from "./MSGraphService.js";
+import { MSGraphService, MSGraphServiceOptions } from "./MSGraphService.js";
 import { Env, MSGraphAuthContext } from "../types.js";
 import logger from "./lib/logger.js";
 
-/**
- * A minimal MCP server wrapper that is instantiated per request.
- * - No manual session management
- * - No manual StreamableHTTPServerTransport usage
- * - Uses the SDK's built-in `server.handle(request)` to process requests
- */
-export class MSGraphMCP {
+export class MSGraphMCP extends McpAgent<Env, unknown, MSGraphAuthContext> {
   public readonly env: Env;
   public readonly auth: MSGraphAuthContext;
+  private service?: MSGraphService;
 
-  constructor(env: Env, auth: MSGraphAuthContext) {
+  constructor(env: Env, auth: string | MSGraphAuthContext) {
+    // McpAgent's constructor expects DurableObjectState and Env, but we're using it differently
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    super({} as any, env as any);
     this.env = env;
-    this.auth = auth;
+    this.auth = typeof auth === "string" ? { accessToken: auth } : auth;
   }
 
-  /** Lazily-initialized MSGraphService */
+  async init() {
+    // Use the svc getter (which creates the MSGraphService with the required 3rd config arg)
+    this.service = this.svc;
+  }
+
   #svc?: MSGraphService;
   private get svc(): MSGraphService {
     if (!this.#svc) {
@@ -43,7 +46,7 @@ export class MSGraphMCP {
         redirectUri: this.env.REDIRECT_URI,
         certificatePath: this.env.CERTIFICATE_PATH,
         certificatePassword: this.env.CERTIFICATE_PASSWORD,
-      } as any);
+      } as MSGraphServiceOptions);
     }
     return this.#svc;
   }
