@@ -52,4 +52,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ["curl", "-f", "http://localhost:3001/health"]
 
 # Start the server
-CMD ["npx", "tsx", "api/index.ts"]
+CMD ["node", "dist/api/index.js"]

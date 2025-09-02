@@ -2,7 +2,6 @@ import { Context, Next } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import logger from './logger.js';
 import { z } from 'zod';
-import { StatusCode } from 'hono/utils/http-status';
 import { Env } from '../../types.js';
 
 // Define token response schema
