@@ -12,7 +12,6 @@ RUN npm ci
 
 # Copy only necessary source files
 COPY api/ ./api/
-COPY server.js ./
 COPY types.d.ts ./
 COPY tsconfig.json ./
 
@@ -36,6 +35,8 @@ RUN npm ci --only=production && npm cache clean --force
 
 # Copy only the essential runtime files and set ownership in one command
 COPY --from=builder --chown=mcp:nodejs /app/dist ./dist
+COPY --from=builder --chown=mcp:nodejs /app/api ./api
+COPY --from=builder --chown=mcp:nodejs /app/types.d.ts ./types.d.ts
 
 # Create logs directory with proper ownership
 RUN mkdir -p logs && chown -R mcp:nodejs logs
@@ -51,4 +52,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ["curl", "-f", "http://localhost:3001/health"]
 
 # Start the server
-CMD ["node", "server.js"]
+CMD ["npx", "tsx", "api/index.ts"]
