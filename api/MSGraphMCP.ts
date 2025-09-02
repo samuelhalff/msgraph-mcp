@@ -3,30 +3,21 @@
  * -------------------------------------------------------------------- */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { McpAgent } from "agents/mcp";
 import { z } from "zod";
-import { MSGraphService, MSGraphServiceOptions } from "./MSGraphService.js";
+import { MSGraphService } from "./MSGraphService.js";
 import { Env, MSGraphAuthContext } from "../types.js";
 import logger from "./lib/logger.js";
 
-export class MSGraphMCP extends McpAgent<Env, unknown, MSGraphAuthContext> {
+export class MSGraphMCP {
   public readonly env: Env;
   public readonly auth: MSGraphAuthContext;
-  private service?: MSGraphService;
 
-  constructor(env: Env, auth: string | MSGraphAuthContext) {
-    // McpAgent's constructor expects DurableObjectState and Env, but we're using it differently
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    super({} as any, env as any);
+  constructor(env: Env, auth: MSGraphAuthContext) {
     this.env = env;
-    this.auth = typeof auth === "string" ? { accessToken: auth } : auth;
+    this.auth = auth;
   }
 
-  async init() {
-    // Use the svc getter (which creates the MSGraphService with the required 3rd config arg)
-    this.service = this.svc;
-  }
-
+  
   #svc?: MSGraphService;
   private get svc(): MSGraphService {
     if (!this.#svc) {
@@ -46,7 +37,7 @@ export class MSGraphMCP extends McpAgent<Env, unknown, MSGraphAuthContext> {
         redirectUri: this.env.REDIRECT_URI,
         certificatePath: this.env.CERTIFICATE_PATH,
         certificatePassword: this.env.CERTIFICATE_PASSWORD,
-      } as MSGraphServiceOptions);
+      } as any);
     }
     return this.#svc;
   }
