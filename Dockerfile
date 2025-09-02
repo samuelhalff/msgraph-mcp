@@ -36,7 +36,6 @@ RUN npm ci --only=production && npm cache clean --force
 
 # Copy only the essential runtime files and set ownership in one command
 COPY --from=builder --chown=mcp:nodejs /app/dist ./dist
-COPY --from=builder --chown=mcp:nodejs /app/server.js ./
 
 # Create logs directory with proper ownership
 RUN mkdir -p logs && chown -R mcp:nodejs logs
