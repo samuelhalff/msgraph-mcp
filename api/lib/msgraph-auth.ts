@@ -25,6 +25,7 @@ export const msGraphBearerTokenAuthMiddleware = async (c: Context<{ Variables: E
   const token = authHeader.replace('Bearer ', '');
   try {
     // Placeholder for token validation (e.g., JWT verification)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (c as any).set('msGraphAuth', { accessToken: token });
     await next();
   } catch (error) {

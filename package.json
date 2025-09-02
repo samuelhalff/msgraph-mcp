@@ -21,6 +21,7 @@
 		"@hono/node-server": "^1.19.1",
 		"@microsoft/microsoft-graph-client": "^3.0.7",
 		"@modelcontextprotocol/sdk": "^1.7.0",
+		"agents": "^0.0.113",
 		"dotenv": "^16.4.5",
 		"hono": "^4.7.4",
 		"isomorphic-fetch": "^3.0.0",

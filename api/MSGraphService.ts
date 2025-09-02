@@ -8,7 +8,7 @@ import { Env, MSGraphAuthContext } from '../types.js';
 import logger from './lib/logger.js';
 
 // Custom options interface to include all required properties
-interface MSGraphServiceOptions extends ClientOptions, Partial<AuthCodeMSALBrowserAuthenticationProviderOptions> {
+export interface MSGraphServiceOptions extends ClientOptions, Partial<AuthCodeMSALBrowserAuthenticationProviderOptions> {
   tenantId: string;
   clientId: string;
   clientSecret?: string;
