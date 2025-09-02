@@ -9,6 +9,7 @@ import {
 } from "./lib/msgraph-auth.js";
 import logger from "./lib/logger.js";
 import { Env, MSGraphAuthContext } from "../types.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 // Store registered clients in memory (in production, use a database)
 interface RegisteredClient {
@@ -32,7 +33,9 @@ const CLIENT_SECRET = process.env.CLIENT_SECRET;
 // Validate required environment variables
 if (!TENANT_ID || !CLIENT_ID) {
   logger.error("Missing required environment variables: TENANT_ID, CLIENT_ID");
-  logger.warn("Server starting with placeholder values - configure .env file for production use");
+  logger.warn(
+    "Server starting with placeholder values - configure .env file for production use"
+  );
   // For development/testing, allow server to start with placeholder values
   // throw new Error("Missing required environment variables");
 }
@@ -40,12 +43,13 @@ if (!TENANT_ID || !CLIENT_ID) {
 const app = new Hono();
 
 // Add comprehensive logging middleware
-app.use('*', async (c, next) => {
+app.use("*", async (c, next) => {
   const start = Date.now();
   const method = c.req.method;
   const path = c.req.path;
-  const userAgent = c.req.header('User-Agent') || 'Unknown';
-  const ip = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'Unknown';
+  const userAgent = c.req.header("User-Agent") || "Unknown";
+  const ip =
+    c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "Unknown";
 
   logger.info(`[${method}] ${path} - IP: ${ip} - User-Agent: ${userAgent}`, {
     method,
@@ -53,7 +57,7 @@ app.use('*', async (c, next) => {
     userAgent,
     ip,
     query: Object.fromEntries(new URL(c.req.url).searchParams),
-    headers: Object.fromEntries(c.req.raw.headers)
+    headers: Object.fromEntries(c.req.raw.headers),
   });
 
   try {
@@ -63,7 +67,7 @@ app.use('*', async (c, next) => {
       method,
       path,
       status: c.res.status,
-      duration
+      duration,
     });
   } catch (error) {
     const duration = Date.now() - start;
@@ -72,7 +76,7 @@ app.use('*', async (c, next) => {
       path,
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
-      duration
+      duration,
     });
     throw error;
   }
@@ -85,7 +89,7 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
   logger.info("OAuth discovery endpoint hit", {
     query: c.req.query(),
     userAgent: c.req.header("User-Agent"),
-    ip: c.req.header("x-forwarded-for") || c.req.header("x-real-ip")
+    ip: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
   });
 
   // Use public URL for OAuth discovery (required for external clients like LibreChat)
@@ -100,7 +104,11 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
     response_types_supported: ["code"],
     response_modes_supported: ["query"],
     grant_types_supported: ["authorization_code", "refresh_token"],
-    token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
+    token_endpoint_auth_methods_supported: [
+      "client_secret_basic",
+      "client_secret_post",
+      "none",
+    ],
     code_challenge_methods_supported: ["S256"],
     scopes_supported: [
       "openid",
@@ -120,7 +128,7 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
       "https://graph.microsoft.com/Notes.Read",
       "https://graph.microsoft.com/Notes.ReadWrite",
       "https://graph.microsoft.com/Tasks.Read",
-      "https://graph.microsoft.com/Tasks.ReadWrite"
+      "https://graph.microsoft.com/Tasks.ReadWrite",
     ],
     claims_supported: [
       "sub",
@@ -132,7 +140,7 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
       "nonce",
       "acr",
       "amr",
-      "azp"
+      "azp",
     ],
     id_token_signing_alg_values_supported: ["RS256"],
     userinfo_endpoint: `${baseUrl}/userinfo`,
@@ -142,7 +150,7 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
   logger.info("OAuth discovery document generated", {
     issuer: discoveryDoc.issuer,
     authEndpoint: discoveryDoc.authorization_endpoint,
-    tokenEndpoint: discoveryDoc.token_endpoint
+    tokenEndpoint: discoveryDoc.token_endpoint,
   });
 
   return c.json(discoveryDoc);
@@ -261,13 +269,13 @@ app.use("/mcp/*", async (c, next) => {
     hasAuthHeader: !!authHeader,
     authHeaderPrefix: authHeader ? authHeader.substring(0, 20) + "..." : null,
     path: c.req.path,
-    method: c.req.method
+    method: c.req.method,
   });
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     logger.warn("MCP middleware - missing or invalid authorization", {
       authHeader: authHeader || "null",
-      path: c.req.path
+      path: c.req.path,
     });
     return c.json({ error: "Missing or invalid Authorization header" }, 401);
   }
@@ -278,7 +286,7 @@ app.post("/mcp", async (c) => {
   logger.info("MCP endpoint hit - starting request processing", {
     contentType: c.req.header("Content-Type"),
     contentLength: c.req.header("Content-Length"),
-    userAgent: c.req.header("User-Agent")
+    userAgent: c.req.header("User-Agent"),
   });
 
   try {
@@ -288,7 +296,7 @@ app.post("/mcp", async (c) => {
 
     logger.info("MCP endpoint - token extracted", {
       tokenLength: token.length,
-      tokenPrefix: token.substring(0, 10) + "..."
+      tokenPrefix: token.substring(0, 10) + "...",
     });
 
     // Parse JSON-RPC request
@@ -299,12 +307,13 @@ app.post("/mcp", async (c) => {
         jsonrpc: request.jsonrpc,
         id: request.id,
         method: request.method,
-        hasParams: !!request.params
+        hasParams: !!request.params,
       });
     } catch (parseError) {
       logger.error("MCP endpoint - failed to parse JSON-RPC request", {
-        error: parseError instanceof Error ? parseError.message : String(parseError),
-        rawBody: await c.req.text()
+        error:
+          parseError instanceof Error ? parseError.message : String(parseError),
+        rawBody: await c.req.text(),
       });
       return c.json({ error: "Invalid JSON-RPC request" }, 400);
     }
@@ -325,24 +334,53 @@ app.post("/mcp", async (c) => {
       hasTenantId: !!env.TENANT_ID,
       hasClientId: !!env.CLIENT_ID,
       hasClientSecret: !!env.CLIENT_SECRET,
-      hasAccessToken: !!env.ACCESS_TOKEN
+      hasAccessToken: !!env.ACCESS_TOKEN,
     });
 
     // Create MSGraphMCP instance (for future use)
-    new MSGraphMCP(env, auth);
+    const mcp = new MSGraphMCP(env, auth);
+    const server = mcp.server;
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // No sessions for stateless mode
+    });
 
     // For now, return a simple response indicating the server is working
     // TODO: Implement proper MCP request processing
-    logger.info("MCP endpoint - server created, returning placeholder response");
-    return c.json({
-      jsonrpc: "2.0",
-      id: request.id,
-      result: {
-        message: "MCP server is running",
-        method: request.method
-      }
+    logger.info(
+      "MCP endpoint - server created, returning placeholder response"
+    );
+
+    // Connect the server to the transport
+    await transport.start();
+    await server.connect(transport);
+    
+    // Handle the request by writing it to the transport and reading the response
+    const responsePromise = new Promise((resolve, reject) => {
+      // Set up message handler
+      const originalOnMessage = transport.onmessage;
+      transport.onmessage = (message) => {
+        try {
+          resolve(message);
+        } catch (error) {
+          reject(error);
+        } finally {
+          // Restore original handler
+          transport.onmessage = originalOnMessage;
+        }
+      };
+      
+      // Send the request
+      transport.send(request);
+    });
+    
+    const response = await responsePromise;
+    
+    logger.info("MCP endpoint - request processed", {
+      responseType: typeof response,
+      hasError: !!(response as any)?.error,
     });
 
+    return c.json(response as any);
   } catch (error) {
     logger.error("MCP request failed", {
       error: error instanceof Error ? error.message : String(error),
@@ -362,20 +400,23 @@ app.get("/health", (c) => {
   return c.json({ status: "ok", service: "msgraph-mcp" });
 });
 
-serve({
-  fetch: app.fetch,
-  port: parseInt(process.env.PORT || '3001'),
-}, (info) => {
-  logger.info("🚀 Microsoft Graph MCP Server started successfully", {
-    port: info.port,
-    address: info.address,
-    environment: {
-      NODE_ENV: process.env.NODE_ENV,
-      PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL,
-      hasTenantId: !!process.env.TENANT_ID,
-      hasClientId: !!process.env.CLIENT_ID,
-      hasClientSecret: !!process.env.CLIENT_SECRET
-    }
-  });
-  console.log(`🚀 Server running on http://localhost:${info.port}`);
-});
+serve(
+  {
+    fetch: app.fetch,
+    port: parseInt(process.env.PORT || "3001"),
+  },
+  (info) => {
+    logger.info("🚀 Microsoft Graph MCP Server started successfully", {
+      port: info.port,
+      address: info.address,
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL,
+        hasTenantId: !!process.env.TENANT_ID,
+        hasClientId: !!process.env.CLIENT_ID,
+        hasClientSecret: !!process.env.CLIENT_SECRET,
+      },
+    });
+    console.log(`🚀 Server running on http://localhost:${info.port}`);
+  }
+);
