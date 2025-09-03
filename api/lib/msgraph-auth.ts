@@ -1,5 +1,3 @@
-import { Context, Next } from 'hono';
-import { HTTPException } from 'hono/http-exception';
 import logger from './logger.js';
 import { z } from 'zod';
 import { Env } from '../../types.js';
@@ -15,25 +13,6 @@ const TokenResponseSchema = z.object({
 
 type TokenResponse = z.infer<typeof TokenResponseSchema>;
 
-export const msGraphBearerTokenAuthMiddleware = async (c: Context<{ Variables: Env }>, next: Next) => {
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    logger.error('Missing or invalid Authorization header', { authHeader: authHeader || 'null' });
-    throw new HTTPException(401, { message: 'Missing or invalid Authorization header' });
-  }
-
-  const token = authHeader.replace('Bearer ', '');
-  try {
-    // Placeholder for token validation (e.g., JWT verification)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (c as any).set('msGraphAuth', { accessToken: token });
-    await next();
-  } catch (error) {
-    logger.error('Token validation failed', { error: (error as Error).message });
-    throw new HTTPException(401, { message: 'Invalid token' });
-  }
-};
-
 export function getMSGraphAuthEndpoint(tenantId: string): string {
   // Build the Microsoft identity authorize endpoint for the given tenant
   return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`;
@@ -45,7 +24,8 @@ export async function refreshAccessToken(
     clientId: string,
     clientSecret: string
 ): Promise<TokenResponse> {
-    const response = await fetch(getMSGraphAuthEndpoint(tenantId), {
+    const tokenEndpoint = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+    const response = await fetch(tokenEndpoint, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/x-www-form-urlencoded'

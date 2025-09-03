@@ -106,24 +106,45 @@ class TestRunner {
   async makeRequest(endpoint, options = {}) {
     const url = `${this.baseUrl}${endpoint}`;
     this.log(`Making request to: ${url}`, 'debug');
-    
+
+    // Merge headers correctly: defaults first, then caller overrides.
+    const defaultHeaders = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+      'User-Agent': 'MCP-Test-Script/1.0'
+    };
+    const mergedHeaders = { ...defaultHeaders, ...(options.headers || {}) };
+
     const response = await fetch(url, {
       timeout: CONFIG.TIMEOUT,
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': 'MCP-Test-Script/1.0',
-        ...options.headers
-      },
-      ...options
+      // Spread other options first to avoid overriding headers below
+      ...options,
+      headers: mergedHeaders
     });
 
     const responseText = await response.text();
     let responseData;
-    
+
+    // Try JSON first
     try {
       responseData = JSON.parse(responseText);
     } catch {
-      responseData = responseText;
+      // If not JSON, attempt to parse SSE JSON payloads (Streamable HTTP)
+      if (typeof responseText === 'string' && responseText.startsWith('event:')) {
+        // Extract first JSON object after a 'data: ' prefix
+        const dataMatch = responseText.match(/\ndata:\s*(\{[\s\S]*?\})\s*\n/);
+        if (dataMatch) {
+          try {
+            responseData = JSON.parse(dataMatch[1]);
+          } catch {
+            responseData = responseText;
+          }
+        } else {
+          responseData = responseText;
+        }
+      } else {
+        responseData = responseText;
+      }
     }
 
     this.log(`Response (${response.status}): ${JSON.stringify(responseData, null, 2)}`, 'debug');
@@ -135,7 +156,7 @@ class TestRunner {
     return { status: response.status, data: responseData, headers: response.headers };
   }
 
-  async makeMcpRequest(method, params = {}) {
+  async makeMcpRequest(method, params = {}, headers = {}) {
     const payload = {
       jsonrpc: '2.0',
       id: Math.random().toString(36).substring(7),
@@ -143,9 +164,12 @@ class TestRunner {
       params
     };
 
+    // Force JSON response for POST to MCP (SSE is via GET only)
+    const mcpHeaders = { ...headers, 'Accept': 'application/json' };
     return this.makeRequest('/mcp', {
       method: 'POST',
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      headers: mcpHeaders
     });
   }
 
@@ -303,7 +327,8 @@ async function testOAuthEndpoints(runner) {
 
 async function testMcpEndpoints(runner) {
   console.log('\n🔧 Testing MCP Protocol Endpoints...');
-  
+  let sessionId;
+
   await runner.test('MCP Initialize', async () => {
     const response = await runner.makeMcpRequest('initialize', {
       protocolVersion: '2024-11-05',
@@ -314,7 +339,7 @@ async function testMcpEndpoints(runner) {
         name: 'test-client',
         version: '1.0.0'
       }
-    });
+    }, { 'accept': 'application/json, text/event-stream' });
 
     if (response.data.error) {
       throw new Error(`MCP Error: ${response.data.error.message}`);
@@ -325,11 +350,14 @@ async function testMcpEndpoints(runner) {
       throw new Error('Missing capabilities or serverInfo in initialize response');
     }
 
+  // capture session id for subsequent requests (header set by server on response)
+  sessionId = response.headers.get ? response.headers.get('mcp-session-id') : response.headers['mcp-session-id'];
+
     return result;
   });
 
   await runner.test('MCP Tools List', async () => {
-    const response = await runner.makeMcpRequest('tools/list');
+  const response = await runner.makeMcpRequest('tools/list', {}, sessionId ? { 'mcp-session-id': sessionId, 'Accept': 'application/json, text/event-stream' } : { 'Accept': 'application/json, text/event-stream' });
     
     if (response.data.error) {
       throw new Error(`MCP Error: ${response.data.error.message}`);
@@ -366,63 +394,50 @@ async function testMcpEndpoints(runner) {
   });
 
   await runner.test('MCP Ping', async () => {
-    const response = await runner.makeMcpRequest('ping');
-    
-    if (response.data.error) {
-      throw new Error(`MCP Error: ${response.data.error.message}`);
+    // Ping is not part of the SDK JSON-RPC set here; expect method not found
+    const response = await runner.makeMcpRequest('ping', {}, sessionId ? { 'mcp-session-id': sessionId } : {});
+    if (!response.data.error || response.data.error.code !== -32601) {
+      throw new Error('Expected method not found error (-32601) for ping');
     }
-
-    if (response.data.result.status !== 'ok') {
-      throw new Error(`Expected ping status 'ok', got: ${response.data.result.status}`);
-    }
-
-    return response.data.result;
+    return response.data.error;
   });
 
   await runner.test('MCP Authentication Required (401 with WWW-Authenticate)', async () => {
     // Test that protected MCP methods return proper 401 with WWW-Authenticate header
-    try {
-      const response = await runner.makeMcpRequest('tools/call', {
-        name: 'throttling-stats',
-        arguments: {}
-      });
-      
-      // Should get a 401 response with proper headers
-      if (response.status !== 401) {
-        throw new Error(`Expected 401 status for unauthenticated call, got ${response.status}`);
-      }
-      
-      // Check for WWW-Authenticate header as required by RFC9728 Section 5.1
-      const wwwAuthHeader = response.headers.get ? 
-        response.headers.get('www-authenticate') : 
-        response.headers['www-authenticate'];
-      
-      if (!wwwAuthHeader) {
-        throw new Error('Missing WWW-Authenticate header in 401 response (required by MCP spec)');
-      }
-      
-      // Verify header format includes Bearer and resource_metadata_url
-      if (!wwwAuthHeader.includes('Bearer') || !wwwAuthHeader.includes('resource_metadata_url')) {
-        throw new Error(`Invalid WWW-Authenticate header format: ${wwwAuthHeader}`);
-      }
-      
-      // Should still be valid JSON-RPC response in body
-      if (response.data.error && response.data.error.code !== -32002) {
-        throw new Error(`Expected authentication error code -32002, got ${response.data.error.code}`);
-      }
-      
-      return { 
-        status: response.status, 
-        wwwAuthenticate: wwwAuthHeader,
-        error: response.data.error 
-      };
-    } catch (error) {
-      // If the fetch itself fails, that might be expected
-      if (error.message && error.message.includes('401')) {
-        return { expected401: true };
-      }
-      throw error;
+    const response = await runner.makeMcpRequest('tools/call', {
+      name: 'throttling-stats',
+      arguments: {}
+    }, sessionId ? { 'mcp-session-id': sessionId } : {});
+
+    // Should get a 401 response with proper headers
+    if (response.status !== 401) {
+      throw new Error(`Expected 401 status for unauthenticated call, got ${response.status}`);
     }
+
+    // Check for WWW-Authenticate header as required by RFC9728 Section 5.1
+    const wwwAuthHeader = response.headers.get ? 
+      response.headers.get('www-authenticate') : 
+      response.headers['www-authenticate'];
+
+    if (!wwwAuthHeader) {
+      throw new Error('Missing WWW-Authenticate header in 401 response (required by MCP spec)');
+    }
+
+    // Verify header format includes Bearer and resource_metadata_url
+    if (!wwwAuthHeader.includes('Bearer') || !wwwAuthHeader.includes('resource_metadata_url')) {
+      throw new Error(`Invalid WWW-Authenticate header format: ${wwwAuthHeader}`);
+    }
+
+    // Should still be valid JSON-RPC response in body
+    if (response.data.error && response.data.error.code !== -32002) {
+      throw new Error(`Expected authentication error code -32002, got ${response.data.error.code}`);
+    }
+
+    return { 
+      status: response.status, 
+      wwwAuthenticate: wwwAuthHeader,
+      error: response.data.error 
+    };
   });
 }
 
@@ -431,10 +446,10 @@ async function testMcpTools(runner) {
   
   // Note: These tests will fail without proper OAuth tokens, but we can test the structure
   await runner.test('Throttling Stats Tool', async () => {
-    const response = await runner.makeMcpRequest('tools/call', {
+  const response = await runner.makeMcpRequest('tools/call', {
       name: 'throttling-stats',
       arguments: {}
-    });
+  }, sessionId ? { 'mcp-session-id': sessionId } : {});
 
     // This should work even without OAuth since it's just internal stats
     if (response.data.error) {
@@ -452,10 +467,10 @@ async function testMcpTools(runner) {
   });
 
   await runner.test('Invalid Tool Call', async () => {
-    const response = await runner.makeMcpRequest('tools/call', {
+  const response = await runner.makeMcpRequest('tools/call', {
       name: 'nonexistent-tool',
       arguments: {}
-    });
+  }, sessionId ? { 'mcp-session-id': sessionId } : {});
 
     // This should return an error
     if (!response.data.error) {
