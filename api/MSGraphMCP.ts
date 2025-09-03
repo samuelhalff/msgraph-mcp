@@ -100,17 +100,16 @@ export class MSGraphMCP {
     this.auth = auth;
   }
 
-  
   #svc?: MSGraphService;
   private get svc(): MSGraphService {
     if (!this.#svc) {
       logger.info("Creating new MSGraphService instance");
-      
+
       // Validate required environment variables
       if (!this.env.TENANT_ID || !this.env.CLIENT_ID) {
-        throw new Error('TENANT_ID and CLIENT_ID are required');
+        throw new Error("TENANT_ID and CLIENT_ID are required");
       }
-      
+
       this.#svc = new MSGraphService(this.env, this.auth, {
         tenantId: this.env.TENANT_ID,
         clientId: this.env.CLIENT_ID,
@@ -157,10 +156,12 @@ export class MSGraphMCP {
     }, {} as Record<string, number>);
 
     const total = availabilityView.length;
-    const statusPercentages = Object.entries(statusCounts).map(([status, count]) => ({
-      status: this.getStatusLabel(status),
-      percentage: Math.round((count / total) * 100)
-    }));
+    const statusPercentages = Object.entries(statusCounts).map(
+      ([status, count]) => ({
+        status: this.getStatusLabel(status),
+        percentage: Math.round((count / total) * 100),
+      })
+    );
 
     return statusPercentages
       .sort((a, b) => b.percentage - a.percentage)
@@ -171,42 +172,66 @@ export class MSGraphMCP {
   /** Convert numeric status to human-readable label */
   private getStatusLabel(status: string): string {
     switch (status) {
-      case "0": return "Free";
-      case "1": return "Tentative";
-      case "2": return "Busy";
-      case "3": return "Out of Office";
-      case "4": return "Working Elsewhere";
-      default: return `Unknown (${status})`;
+      case "0":
+        return "Free";
+      case "1":
+        return "Tentative";
+      case "2":
+        return "Busy";
+      case "3":
+        return "Out of Office";
+      case "4":
+        return "Working Elsewhere";
+      default:
+        return `Unknown (${status})`;
     }
   }
 
   // Track tools as they're registered with the server
-  private toolRegistry = new Map<string, { name: string; description: string; inputSchema: ZodTypeAny }>();
-  private toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ type: "text", text: string }> }> | { content: Array<{ type: "text", text: string }> }>();
+  private toolRegistry = new Map<
+    string,
+    { name: string; description: string; inputSchema: ZodTypeAny }
+  >();
+  private toolHandlers = new Map<
+    string,
+    (
+      args: Record<string, unknown>
+    ) =>
+      | Promise<{ content: Array<{ type: "text"; text: string }> }>
+      | { content: Array<{ type: "text"; text: string }> }
+  >();
 
   /** Register a tool with tracking */
   private registerServerTool(
-    server: McpServer, 
-    name: string, 
-    schema: { title?: string; description?: string; inputSchema: ZodTypeAny }, 
-    handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: "text", text: string }> }> | { content: Array<{ type: "text", text: string }> }
+    server: McpServer,
+    name: string,
+    schema: { title?: string; description?: string; inputSchema: ZodTypeAny },
+    handler: (
+      args: Record<string, unknown>
+    ) =>
+      | Promise<{ content: Array<{ type: "text"; text: string }> }>
+      | { content: Array<{ type: "text"; text: string }> }
   ) {
     // Track the tool with full schema information for HTTP transport
     this.toolRegistry.set(name, {
       name,
-      description: schema.description || schema.title || `Microsoft Graph tool: ${name}`,
-      inputSchema: schema.inputSchema
+      description:
+        schema.description || schema.title || `Microsoft Graph tool: ${name}`,
+      inputSchema: schema.inputSchema,
     });
-    
+
     // Store the handler for direct tool calls
     this.toolHandlers.set(name, handler);
-    
+
     // Register with the server using proper MCP format
     // MCP SDK expects the full schema object but with inputSchema as ZodRawShape
     const mcpSchema = {
       title: schema.title,
       description: schema.description,
-      inputSchema: schema.inputSchema._def?.shape || (schema.inputSchema as ZodObject<Record<string, ZodTypeAny>>).shape || {}
+      inputSchema:
+        schema.inputSchema._def?.shape ||
+        (schema.inputSchema as ZodObject<Record<string, ZodTypeAny>>).shape ||
+        {},
     };
     server.registerTool(name, mcpSchema, handler);
   }
@@ -222,17 +247,27 @@ export class MSGraphMCP {
 
   /** Get list of available tools from our registry */
   getAvailableTools() {
-  // If no tools registered yet, build the server to populate the registry
-  if (this.toolRegistry.size === 0) {
-    void this.server; // Trigger tool registration
+    if (this.toolRegistry.size === 0) {
+      void this.server; // Trigger tool registration
+    }
+    const tools = Array.from(this.toolRegistry.values()).map((tool) => {
+      const jsonSchema = zodToJsonSchema(tool.inputSchema);
+      // Ensure clean JSON Schema with type: "object"
+      const cleanSchema = {
+        type: "object",
+        properties: (jsonSchema as any).properties || {},
+        required: (jsonSchema as any).required || [],
+        additionalProperties: (jsonSchema as any).additionalProperties || false,
+      };
+      return {
+        name: tool.name,
+        description: tool.description,
+        inputSchema: cleanSchema,
+      };
+    });
+    logger.info("Returning available tools", { tools });
+    return tools;
   }
-
-  return Array.from(this.toolRegistry.values()).map((tool) => ({
-    name: tool.name,
-    description: tool.description,
-    inputSchema: zodToJsonSchema(tool.inputSchema), // Convert Zod schema to JSON Schema
-  }));
-}
 
   /** Get detailed tool information for debugging */
   getToolsDebugInfo() {
@@ -240,21 +275,28 @@ export class MSGraphMCP {
     if (this.toolRegistry.size === 0) {
       void this.server;
     }
-    
+
     return {
       totalTools: this.toolRegistry.size,
       toolNames: Array.from(this.toolRegistry.keys()),
-      tools: Array.from(this.toolRegistry.values()).map(tool => ({
+      tools: Array.from(this.toolRegistry.values()).map((tool) => ({
         name: tool.name,
         description: tool.description,
         hasInputSchema: !!tool.inputSchema,
-        inputSchemaType: tool.inputSchema?.constructor?.name || typeof tool.inputSchema,
-        schemaKeys: tool.inputSchema && typeof tool.inputSchema === 'object' && 'shape' in tool.inputSchema 
-          ? Object.keys((tool.inputSchema as ZodObject<Record<string, ZodTypeAny>>)._def.shape || {})
-          : []
+        inputSchemaType:
+          tool.inputSchema?.constructor?.name || typeof tool.inputSchema,
+        schemaKeys:
+          tool.inputSchema &&
+          typeof tool.inputSchema === "object" &&
+          "shape" in tool.inputSchema
+            ? Object.keys(
+                (tool.inputSchema as ZodObject<Record<string, ZodTypeAny>>)._def
+                  .shape || {}
+              )
+            : [],
       })),
       hasHandlers: this.toolHandlers.size,
-      handlerNames: Array.from(this.toolHandlers.keys())
+      handlerNames: Array.from(this.toolHandlers.keys()),
     };
   }
 
@@ -266,7 +308,7 @@ export class MSGraphMCP {
       void this.server;
       // Server is now created and tools are registered
     }
-    
+
     return this.toolRegistry.has(toolName);
   }
 
@@ -401,13 +443,23 @@ export class MSGraphMCP {
         title: "Get Users",
         description: "Get users from Microsoft Graph",
         inputSchema: z.object({
-          queryParams: z.record(z.string()).optional().describe("Query parameters for the request"),
-          fetchAll: z.boolean().optional().default(false).describe("Fetch all pages of results")
+          queryParams: z
+            .record(z.string())
+            .optional()
+            .describe("Query parameters for the request"),
+          fetchAll: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe("Fetch all pages of results"),
         }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as UserGroupParams;
-        const res = await this.svc.getUsers(params.queryParams, params.fetchAll);
+        const res = await this.svc.getUsers(
+          params.queryParams,
+          params.fetchAll
+        );
         return this.formatResponse("Users retrieved", res);
       }
     );
@@ -419,13 +471,23 @@ export class MSGraphMCP {
         title: "Get Groups",
         description: "Get groups from Microsoft Graph",
         inputSchema: z.object({
-          queryParams: z.record(z.string()).optional().describe("Query parameters for the request"),
-          fetchAll: z.boolean().optional().default(false).describe("Fetch all pages of results")
+          queryParams: z
+            .record(z.string())
+            .optional()
+            .describe("Query parameters for the request"),
+          fetchAll: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe("Fetch all pages of results"),
         }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as UserGroupParams;
-        const res = await this.svc.getGroups(params.queryParams, params.fetchAll);
+        const res = await this.svc.getGroups(
+          params.queryParams,
+          params.fetchAll
+        );
         return this.formatResponse("Groups retrieved", res);
       }
     );
@@ -438,12 +500,14 @@ export class MSGraphMCP {
         title: "Search Users",
         description: "Search for users in Microsoft Graph",
         inputSchema: z.object({
-          query: z.string().describe("Search query for users")
+          query: z.string().describe("Search query for users"),
         }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as SearchUsersParams;
-        const res = await this.svc.getUsers({ $search: `"displayName:${params.query}"` });
+        const res = await this.svc.getUsers({
+          $search: `"displayName:${params.query}"`,
+        });
         return this.formatResponse("User search completed", res);
       }
     );
@@ -457,17 +521,17 @@ export class MSGraphMCP {
         inputSchema: z.object({
           to: z.string().describe("Recipient email address"),
           subject: z.string().describe("Email subject"),
-          body: z.string().describe("Email body")
+          body: z.string().describe("Email body"),
         }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as SendMailParams;
-        const res = await this.svc.genericGraphRequest('/me/sendMail', 'post', {
+        const res = await this.svc.genericGraphRequest("/me/sendMail", "post", {
           message: {
             subject: params.subject,
             body: { contentType: "Text", content: params.body },
-            toRecipients: [{ emailAddress: { address: params.to } }]
-          }
+            toRecipients: [{ emailAddress: { address: params.to } }],
+          },
         });
         return this.formatResponse("Email sent", res);
       }
@@ -480,22 +544,33 @@ export class MSGraphMCP {
         title: "List Calendar Events",
         description: "List calendar events for the current user",
         inputSchema: z.object({
-          startDateTime: z.string().optional().describe("Start date-time filter"),
-          endDateTime: z.string().optional().describe("End date-time filter")
+          startDateTime: z
+            .string()
+            .optional()
+            .describe("Start date-time filter"),
+          endDateTime: z.string().optional().describe("End date-time filter"),
         }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as ListCalendarEventsParams;
         const queryParams: Record<string, string> = {};
-        if (params.startDateTime) queryParams.$filter = `start/dateTime ge '${params.startDateTime}'`;
+        if (params.startDateTime)
+          queryParams.$filter = `start/dateTime ge '${params.startDateTime}'`;
         if (params.endDateTime) {
-          const filter = queryParams.$filter ? `${queryParams.$filter} and end/dateTime le '${params.endDateTime}'` : `end/dateTime le '${params.endDateTime}'`;
+          const filter = queryParams.$filter
+            ? `${queryParams.$filter} and end/dateTime le '${params.endDateTime}'`
+            : `end/dateTime le '${params.endDateTime}'`;
           queryParams.$filter = filter;
         }
         queryParams.$orderby = "start/dateTime";
         queryParams.$top = "50";
-        
-        const res = await this.svc.genericGraphRequest('/me/events', 'get', undefined, queryParams);
+
+        const res = await this.svc.genericGraphRequest(
+          "/me/events",
+          "get",
+          undefined,
+          queryParams
+        );
         return this.formatResponse("Upcoming events retrieved", res);
       }
     );
@@ -510,9 +585,12 @@ export class MSGraphMCP {
           subject: z.string().describe("Event subject"),
           start: z.string().describe("Start time in ISO format"),
           end: z.string().describe("End time in ISO format"),
-          attendees: z.array(z.string()).optional().describe("Attendee email addresses"),
+          attendees: z
+            .array(z.string())
+            .optional()
+            .describe("Attendee email addresses"),
           body: z.string().optional().describe("Event body"),
-          location: z.string().optional().describe("Event location")
+          location: z.string().optional().describe("Event location"),
         }),
       },
       async (args: Record<string, unknown>) => {
@@ -520,19 +598,24 @@ export class MSGraphMCP {
         const event: Record<string, unknown> = {
           subject: params.subject,
           start: { dateTime: params.start, timeZone: "UTC" },
-          end: { dateTime: params.end, timeZone: "UTC" }
+          end: { dateTime: params.end, timeZone: "UTC" },
         };
-        
-        if (params.body) event.body = { contentType: "HTML", content: params.body };
+
+        if (params.body)
+          event.body = { contentType: "HTML", content: params.body };
         if (params.location) event.location = { displayName: params.location };
         if (params.attendees) {
           event.attendees = params.attendees.map((email: string) => ({
             emailAddress: { address: email },
-            type: "required"
+            type: "required",
           }));
         }
-        
-        const res = await this.svc.genericGraphRequest('/me/events', 'post', event);
+
+        const res = await this.svc.genericGraphRequest(
+          "/me/events",
+          "post",
+          event
+        );
         return this.formatResponse("Calendar event created", res);
       }
     );
@@ -550,7 +633,10 @@ export class MSGraphMCP {
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as UserGroupParams;
-        const res = await this.svc.getApplications(params.queryParams, params.fetchAll);
+        const res = await this.svc.getApplications(
+          params.queryParams,
+          params.fetchAll
+        );
         return this.formatResponse("Applications retrieved", res);
       }
     );
@@ -576,7 +662,10 @@ export class MSGraphMCP {
         try {
           const msg = {
             subject: params.subject ?? "",
-            body: { contentType: params.contentType ?? "Text", content: params.body ?? "" },
+            body: {
+              contentType: params.contentType ?? "Text",
+              content: params.body ?? "",
+            },
             toRecipients: (params.toRecipients ?? []).map((a: string) => ({
               emailAddress: { address: a },
             })),
@@ -595,7 +684,11 @@ export class MSGraphMCP {
           return this.formatResponse("Draft created", res);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          logger.error("createDraftEmail error", { msg, subject: params.subject, contentType: params.contentType });
+          logger.error("createDraftEmail error", {
+            msg,
+            subject: params.subject,
+            contentType: params.contentType,
+          });
           throw new Error(msg);
         }
       }
@@ -718,11 +811,14 @@ export class MSGraphMCP {
       "search-files",
       {
         title: "Search Files",
-        description: "Search for files across OneDrive, SharePoint, and Teams using Microsoft Graph Search API.",
+        description:
+          "Search for files across OneDrive, SharePoint, and Teams using Microsoft Graph Search API.",
         inputSchema: z.object({
           query: z
             .string()
-            .describe("Search query for files (e.g., 'quarterly report', 'meeting notes', or 'filename:document.pdf')"),
+            .describe(
+              "Search query for files (e.g., 'quarterly report', 'meeting notes', or 'filename:document.pdf')"
+            ),
           entityTypes: z
             .array(z.enum(["driveItem"]))
             .optional()
@@ -740,7 +836,9 @@ export class MSGraphMCP {
             .min(0)
             .optional()
             .default(0)
-            .describe("Starting point for results (for pagination, default: 0)"),
+            .describe(
+              "Starting point for results (for pagination, default: 0)"
+            ),
           fileTypes: z
             .array(z.string())
             .optional()
@@ -749,18 +847,22 @@ export class MSGraphMCP {
             .enum(["default", "sharepoint", "onedrive"])
             .optional()
             .default("default")
-            .describe("Content source to search: 'default' (all), 'sharepoint', or 'onedrive'"),
+            .describe(
+              "Content source to search: 'default' (all), 'sharepoint', or 'onedrive'"
+            ),
           sortBy: z
             .enum(["relevance", "lastModifiedDateTime", "name", "size"])
             .optional()
             .default("relevance")
-            .describe("Sort results by: 'relevance', 'lastModifiedDateTime', 'name', or 'size'"),
+            .describe(
+              "Sort results by: 'relevance', 'lastModifiedDateTime', 'name', or 'size'"
+            ),
           sortOrder: z
             .enum(["asc", "desc"])
             .optional()
             .default("desc")
-            .describe("Sort order: 'asc' or 'desc'")
-        })
+            .describe("Sort order: 'asc' or 'desc'"),
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as SearchFilesParams;
@@ -773,26 +875,30 @@ export class MSGraphMCP {
               {
                 entityTypes: params.entityTypes || ["driveItem"],
                 query: {
-                  queryString: params.query
+                  queryString: params.query,
                 },
                 from: params.from || 0,
                 size: params.size || 25,
                 sortProperties: [
                   {
                     name: params.sortBy || "relevance",
-                    isDescending: (params.sortOrder || "desc") === "desc"
-                  }
+                    isDescending: (params.sortOrder || "desc") === "desc",
+                  },
                 ],
-                ...(params.contentSource && params.contentSource !== "default" && {
-                  contentSources: [params.contentSource]
-                }),
-                ...(params.fileTypes && params.fileTypes.length > 0 && {
-                  query: {
-                    queryString: `${params.query} AND (${params.fileTypes.map((type: string) => `filetype:${type}`).join(" OR ")})`
-                  }
-                })
-              }
-            ]
+                ...(params.contentSource &&
+                  params.contentSource !== "default" && {
+                    contentSources: [params.contentSource],
+                  }),
+                ...(params.fileTypes &&
+                  params.fileTypes.length > 0 && {
+                    query: {
+                      queryString: `${params.query} AND (${params.fileTypes
+                        .map((type: string) => `filetype:${type}`)
+                        .join(" OR ")})`,
+                    },
+                  }),
+              },
+            ],
           };
 
           // Make the search request
@@ -804,37 +910,60 @@ export class MSGraphMCP {
 
           // Format the results for better readability
           const formattedResults = {
-            totalResults: searchResults.value?.[0]?.hitsContainers?.[0]?.total || 0,
-            results: searchResults.value?.[0]?.hitsContainers?.[0]?.hits?.map((hit: Record<string, unknown>) => {
-              const resource = hit.resource as Record<string, unknown>;
-              const file = resource?.file as Record<string, unknown>;
-              const parentRef = resource?.parentReference as Record<string, unknown>;
-              const createdBy = resource?.createdBy as Record<string, unknown>;
-              const lastModifiedBy = resource?.lastModifiedBy as Record<string, unknown>;
-              const createdByUser = createdBy?.user as Record<string, unknown>;
-              const lastModifiedByUser = lastModifiedBy?.user as Record<string, unknown>;
-              
-              return {
-                name: resource?.name as string || "Unknown",
-                webUrl: resource?.webUrl as string || "",
-                lastModified: resource?.lastModifiedDateTime as string || "",
-                size: resource?.size as number || 0,
-                fileType: file?.mimeType as string || "",
-                summary: hit.summary as string || "",
-                path: parentRef?.path as string || "",
-                createdBy: createdByUser?.displayName as string || "",
-                modifiedBy: lastModifiedByUser?.displayName as string || "",
-                downloadUrl: (resource as Record<string, unknown>)?.["@microsoft.graph.downloadUrl"] as string || "",
-                score: hit.score as number || 0
-              };
-            }) || []
+            totalResults:
+              searchResults.value?.[0]?.hitsContainers?.[0]?.total || 0,
+            results:
+              searchResults.value?.[0]?.hitsContainers?.[0]?.hits?.map(
+                (hit: Record<string, unknown>) => {
+                  const resource = hit.resource as Record<string, unknown>;
+                  const file = resource?.file as Record<string, unknown>;
+                  const parentRef = resource?.parentReference as Record<
+                    string,
+                    unknown
+                  >;
+                  const createdBy = resource?.createdBy as Record<
+                    string,
+                    unknown
+                  >;
+                  const lastModifiedBy = resource?.lastModifiedBy as Record<
+                    string,
+                    unknown
+                  >;
+                  const createdByUser = createdBy?.user as Record<
+                    string,
+                    unknown
+                  >;
+                  const lastModifiedByUser = lastModifiedBy?.user as Record<
+                    string,
+                    unknown
+                  >;
+
+                  return {
+                    name: (resource?.name as string) || "Unknown",
+                    webUrl: (resource?.webUrl as string) || "",
+                    lastModified:
+                      (resource?.lastModifiedDateTime as string) || "",
+                    size: (resource?.size as number) || 0,
+                    fileType: (file?.mimeType as string) || "",
+                    summary: (hit.summary as string) || "",
+                    path: (parentRef?.path as string) || "",
+                    createdBy: (createdByUser?.displayName as string) || "",
+                    modifiedBy:
+                      (lastModifiedByUser?.displayName as string) || "",
+                    downloadUrl:
+                      ((resource as Record<string, unknown>)?.[
+                        "@microsoft.graph.downloadUrl"
+                      ] as string) || "",
+                    score: (hit.score as number) || 0,
+                  };
+                }
+              ) || [],
           };
 
           return this.formatResponse(
             `Found ${formattedResults.totalResults} files matching "${params.query}"`,
             formattedResults
           );
-
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           logger.error("Search files tool error", { msg, params });
@@ -849,27 +978,36 @@ export class MSGraphMCP {
       "get-schedule",
       {
         title: "Get Schedule",
-        description: "Get the free/busy availability information for a collection of users, distributions lists, or resources for a specified time period.",
+        description:
+          "Get the free/busy availability information for a collection of users, distributions lists, or resources for a specified time period.",
         inputSchema: z.object({
           schedules: z
             .array(z.string())
             .min(1)
             .max(20)
-            .describe("Email addresses of users, distribution lists, or resources to get schedule for (max 20)"),
+            .describe(
+              "Email addresses of users, distribution lists, or resources to get schedule for (max 20)"
+            ),
           startTime: z
             .string()
-            .describe("Start time for the schedule query in ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')"),
+            .describe(
+              "Start time for the schedule query in ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')"
+            ),
           endTime: z
             .string()
-            .describe("End time for the schedule query in ISO 8601 format (e.g., '2024-03-15T18:00:00.000Z')"),
+            .describe(
+              "End time for the schedule query in ISO 8601 format (e.g., '2024-03-15T18:00:00.000Z')"
+            ),
           availabilityViewInterval: z
             .number()
             .min(5)
             .max(1440)
             .optional()
             .default(30)
-            .describe("Interval in minutes for availability view (5-1440, default: 30). Represents the granularity of free/busy time.")
-        })
+            .describe(
+              "Interval in minutes for availability view (5-1440, default: 30). Represents the granularity of free/busy time."
+            ),
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as GetScheduleParams;
@@ -879,17 +1017,20 @@ export class MSGraphMCP {
           // Validate date format and order
           const startDate = new Date(params.startTime);
           const endDate = new Date(params.endTime);
-          
+
           if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-            throw new Error("Invalid date format. Use ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')");
+            throw new Error(
+              "Invalid date format. Use ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')"
+            );
           }
-          
+
           if (startDate >= endDate) {
             throw new Error("Start time must be before end time");
           }
 
           // Check if time range is reasonable (not more than 62 days as per API limits)
-          const daysDiff = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+          const daysDiff =
+            (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
           if (daysDiff > 62) {
             throw new Error("Time range cannot exceed 62 days");
           }
@@ -899,13 +1040,13 @@ export class MSGraphMCP {
             schedules: params.schedules,
             startTime: {
               dateTime: params.startTime,
-              timeZone: "UTC"
+              timeZone: "UTC",
             },
             endTime: {
               dateTime: params.endTime,
-              timeZone: "UTC"
+              timeZone: "UTC",
             },
-            availabilityViewInterval: params.availabilityViewInterval || 30
+            availabilityViewInterval: params.availabilityViewInterval || 30,
           };
 
           // Make the request to Microsoft Graph
@@ -920,40 +1061,60 @@ export class MSGraphMCP {
             queryPeriod: {
               startTime: params.startTime,
               endTime: params.endTime,
-              intervalMinutes: params.availabilityViewInterval || 30
+              intervalMinutes: params.availabilityViewInterval || 30,
             },
-            schedules: scheduleData.value?.map((schedule: Record<string, unknown>, index: number) => {
-              const workingHours = schedule.workingHours as Record<string, unknown>;
-              const timeZone = workingHours?.timeZone as Record<string, unknown>;
-              
-              return {
-                email: params.schedules[index],
-                availabilityView: schedule.availabilityView as string[] || [],
-                busyTimes: (schedule.busyTimes as Record<string, unknown>[])?.map((busyTime: Record<string, unknown>) => {
-                  const start = busyTime.start as Record<string, unknown>;
-                  const end = busyTime.end as Record<string, unknown>;
+            schedules:
+              scheduleData.value?.map(
+                (schedule: Record<string, unknown>, index: number) => {
+                  const workingHours = schedule.workingHours as Record<
+                    string,
+                    unknown
+                  >;
+                  const timeZone = workingHours?.timeZone as Record<
+                    string,
+                    unknown
+                  >;
+
                   return {
-                    start: start?.dateTime as string || "",
-                    end: end?.dateTime as string || "",
-                    status: busyTime.status as string || "busy"
+                    email: params.schedules[index],
+                    availabilityView:
+                      (schedule.availabilityView as string[]) || [],
+                    busyTimes:
+                      (schedule.busyTimes as Record<string, unknown>[])?.map(
+                        (busyTime: Record<string, unknown>) => {
+                          const start = busyTime.start as Record<
+                            string,
+                            unknown
+                          >;
+                          const end = busyTime.end as Record<string, unknown>;
+                          return {
+                            start: (start?.dateTime as string) || "",
+                            end: (end?.dateTime as string) || "",
+                            status: (busyTime.status as string) || "busy",
+                          };
+                        }
+                      ) || [],
+                    workingHours: workingHours
+                      ? {
+                          daysOfWeek:
+                            (workingHours.daysOfWeek as string[]) || [],
+                          startTime: (workingHours.startTime as string) || "",
+                          endTime: (workingHours.endTime as string) || "",
+                          timeZone: (timeZone?.name as string) || "UTC",
+                        }
+                      : null,
+                    freeBusyStatus: this.getFreeBusyInterpretation(
+                      (schedule.availabilityView as string[]) || []
+                    ),
                   };
-                }) || [],
-                workingHours: workingHours ? {
-                  daysOfWeek: workingHours.daysOfWeek as string[] || [],
-                  startTime: workingHours.startTime as string || "",
-                  endTime: workingHours.endTime as string || "",
-                  timeZone: timeZone?.name as string || "UTC"
-                } : null,
-                freeBusyStatus: this.getFreeBusyInterpretation(schedule.availabilityView as string[] || [])
-              };
-            }) || []
+                }
+              ) || [],
           };
 
           return this.formatResponse(
             `Retrieved schedule information for ${params.schedules.length} recipient(s) from ${params.startTime} to ${params.endTime}`,
             formattedSchedule
           );
-
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           logger.error("Get schedule tool error", { msg, params });
@@ -968,16 +1129,17 @@ export class MSGraphMCP {
       "throttling-stats",
       {
         title: "Throttling Statistics",
-        description: "Get current throttling statistics and API performance metrics for Microsoft Graph requests.",
-        inputSchema: z.object({})
+        description:
+          "Get current throttling statistics and API performance metrics for Microsoft Graph requests.",
+        inputSchema: z.object({}),
       },
       async () => {
         try {
           logger.info("Throttling stats tool called");
-          
+
           // Get current stats from throttling manager
           const stats = throttlingManager.getStats();
-          
+
           const enhancedStats = {
             ...stats,
             timestamp: new Date().toISOString(),
@@ -986,12 +1148,14 @@ export class MSGraphMCP {
               totalRequests: "Total requests since server start",
               recentRequests: "Requests in the last 10 minutes",
               errorRate: "Percentage of failed requests (0.0 to 1.0)",
-              throttledRequests: "Number of 429 (throttled) responses"
-            }
+              throttledRequests: "Number of 429 (throttled) responses",
+            },
           };
 
-          return this.formatResponse("Throttling statistics retrieved", enhancedStats);
-
+          return this.formatResponse(
+            "Throttling statistics retrieved",
+            enhancedStats
+          );
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           logger.error("Throttling stats tool error", { msg });
@@ -1001,19 +1165,19 @@ export class MSGraphMCP {
     );
 
     logger.info("McpServer configured");
-    
+
     // Log all registered tools for debugging and verification
     const registeredTools = Array.from(this.toolRegistry.keys());
-    logger.info("Registered MCP tools", { 
+    logger.info("Registered MCP tools", {
       count: registeredTools.length,
       tools: registeredTools,
-      details: Array.from(this.toolRegistry.values()).map(tool => ({
+      details: Array.from(this.toolRegistry.values()).map((tool) => ({
         name: tool.name,
         description: tool.description,
-        hasInputSchema: !!tool.inputSchema
-      }))
+        hasInputSchema: !!tool.inputSchema,
+      })),
     });
-    
+
     return server;
   }
 }
