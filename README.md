@@ -300,11 +300,10 @@ msgraph-mcp/
 │   │   └── msgraph-auth.ts # Authentication helpers
 │   ├── MSGraphMCP.ts      # MCP server implementation
 │   ├── MSGraphService.ts  # Microsoft Graph client
-│   └── index.ts           # Main server entry point
+│   └── index.ts           # Main Express server entry (MCP + OAuth)
 ├── dist/                   # Compiled JavaScript
 ├── logs/                   # Log files
 ├── public/                 # Static assets
-├── server.js              # Production server
 ├── Dockerfile             # Docker configuration
 ├── docker-compose.yml     # Docker Compose setup
 └── package.json          # Dependencies and scripts
@@ -390,7 +389,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Microsoft Graph](https://docs.microsoft.com/en-us/graph/) - RESTful web API for Microsoft services
 - [Model Context Protocol](https://modelcontextprotocol.io/) - Open standard for tool use
 - [LibreChat](https://github.com/danny-avila/LibreChat) - Open-source chat interface
-- [Hono](https://hono.dev/) - Fast web framework for Cloudflare Workers and more
+
 
 ## 📞 Support
 

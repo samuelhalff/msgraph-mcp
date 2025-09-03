@@ -1,6 +1,8 @@
-import { Hono } from "hono";
-import { serve } from "@hono/node-server";
-import { cors } from "hono/cors";
+import express, { Request, Response } from "express";
+import cors from "cors";
+import bodyParser from "body-parser";
+import { Server as MCPServerCore } from "@modelcontextprotocol/sdk/server/index.js";
+import { GraphMCPServer } from "./GraphMCPServer.js";
 import { MSGraphMCP } from "./MSGraphMCP.js";
 import {
   exchangeCodeForToken,
@@ -71,66 +73,52 @@ if (!TENANT_ID || !CLIENT_ID) {
   // throw new Error("Missing required environment variables");
 }
 
-const app = new Hono();
+const app = express();
+app.use(cors());
+app.use(bodyParser.json({ limit: "2mb" }));
 
 // Add comprehensive logging middleware
-app.use("*", async (c, next) => {
+app.use((req: Request, res: Response, next: express.NextFunction) => {
   const start = Date.now();
-  const method = c.req.method;
-  const path = c.req.path;
-  const userAgent = c.req.header("User-Agent") || "Unknown";
-  const ip =
-    c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "Unknown";
-
+  const { method, path } = req;
+  const userAgent = req.header("User-Agent") || "Unknown";
+  const ip = req.header("x-forwarded-for") || req.header("x-real-ip") || req.ip;
   logger.info(`[${method}] ${path} - IP: ${ip} - User-Agent: ${userAgent}`, {
     method,
     path,
     userAgent,
     ip,
-    query: Object.fromEntries(new URL(c.req.url).searchParams),
-    headers: Object.fromEntries(c.req.raw.headers),
+    query: req.query,
+    headers: req.headers,
   });
-
-  try {
-    await next();
+  res.on("finish", () => {
     const duration = Date.now() - start;
-    logger.info(`[${method}] ${path} - ${c.res.status} - ${duration}ms`, {
+    logger.info(`[${method}] ${path} - ${res.statusCode} - ${duration}ms`, {
       method,
       path,
-      status: c.res.status,
+      status: res.statusCode,
       duration,
     });
-  } catch (error) {
-    const duration = Date.now() - start;
-    logger.error(`[${method}] ${path} - ERROR - ${duration}ms`, {
-      method,
-      path,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-      duration,
-    });
-    throw error;
-  }
+  });
+  next();
 });
 
-app.use(cors());
-
 // OAuth Protected Resource Metadata (RFC9728) - REQUIRED by MCP spec
-app.get("/.well-known/oauth-protected-resource", async (c) => {
+app.get("/.well-known/oauth-protected-resource", async (req: Request, res: Response) => {
   logger.info("OAuth Protected Resource Metadata endpoint hit", {
-    query: c.req.query(),
-    userAgent: c.req.header("User-Agent"),
-    ip: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+    query: req.query,
+    userAgent: req.header("User-Agent"),
+    ip: req.header("x-forwarded-for") || req.header("x-real-ip"),
   });
 
   // Get the server's base URL for canonical resource URI
-  const protocol = c.req.header("x-forwarded-proto") || "https";
-  const host = c.req.header("host");
+  const protocol = req.header("x-forwarded-proto") || "https";
+  const host = req.header("host");
   const serverBaseUrl = `${protocol}://${host}`;
 
   // Try to extract scopes from Authorization header if present
   let supportedScopes = DEFAULT_MSGRAPH_SCOPES;
-  const authHeader = c.req.header("Authorization");
+  const authHeader = req.header("Authorization");
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.replace("Bearer ", "");
     const tokenScopes = extractScopesFromToken(token);
@@ -165,15 +153,15 @@ app.get("/.well-known/oauth-protected-resource", async (c) => {
     dynamicScopes: authHeader ? true : false
   });
 
-  return c.json(protectedResourceMetadata);
+  return res.json(protectedResourceMetadata);
 });
 
 // OAuth Authorization Server Discovery
-app.get("/.well-known/oauth-authorization-server", async (c) => {
+app.get("/.well-known/oauth-authorization-server", async (req: Request, res: Response) => {
   logger.info("OAuth discovery endpoint hit", {
-    query: c.req.query(),
-    userAgent: c.req.header("User-Agent"),
-    ip: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+  query: req.query,
+  userAgent: req.header("User-Agent"),
+  ip: req.header("x-forwarded-for") || req.header("x-real-ip"),
   });
 
     // Use Microsoft Azure endpoints as per MCP standards - from environment variables
@@ -250,21 +238,18 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
     clientId: discoveryDoc.client_id
   });
 
-  return c.json(discoveryDoc);
+  return res.json(discoveryDoc);
 });
 
 // Dynamic Client Registration endpoint
-app.post("/register", async (c) => {
+app.post("/register", async (req: Request, res: Response) => {
   logger.info("/register endpoint hit");
   try {
-    const body = await c.req.json();
+  const body = req.body;
 
     // Validate required fields
     if (!body.client_name || !body.redirect_uris) {
-      return c.json(
-        { error: "Missing required fields: client_name, redirect_uris" },
-        400
-      );
+      return res.status(400).json({ error: "Missing required fields: client_name, redirect_uris" });
     }
 
     // Generate a client ID
@@ -283,7 +268,7 @@ app.post("/register", async (c) => {
     });
 
     // Return the client registration response
-    return c.json(
+  return res.status(201).json(
       {
         client_id: clientId,
         client_name: body.client_name || "MCP Client",
@@ -296,19 +281,18 @@ app.post("/register", async (c) => {
         scope: body.scope,
         token_endpoint_auth_method: "none",
       },
-      201
     );
   } catch (error) {
     logger.error("Error in client registration", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return c.json({ error: "Invalid request body" }, 400);
+  return res.status(400).json({ error: "Invalid request body" });
   }
 });
 
 // Authorization endpoint - redirects to Microsoft
-app.get("/authorize", async (c) => {
-  const url = new URL(c.req.url);
+app.get("/authorize", async (req: Request, res: Response) => {
+  const url = new URL(req.protocol + "://" + req.get("host") + req.originalUrl);
   const microsoftAuthUrl = new URL(getMicrosoftAuthEndpoint("authorize"));
 
   // Copy all query parameters except client_id
@@ -323,13 +307,13 @@ app.get("/authorize", async (c) => {
   microsoftAuthUrl.searchParams.set("tenant", TENANT_ID!);
 
   // Redirect to Microsoft authorization page
-  return c.redirect(microsoftAuthUrl.toString());
+  return res.redirect(microsoftAuthUrl.toString());
 });
 
 // Token exchange endpoint
-app.post("/token", async (c) => {
+app.post("/token", async (req: Request, res: Response) => {
   try {
-    const body = await c.req.parseBody();
+  const body = req.body || {};
 
     if (body.grant_type === "authorization_code") {
       const result = await exchangeCodeForToken(
@@ -339,7 +323,7 @@ app.post("/token", async (c) => {
         CLIENT_SECRET!,
         body.code_verifier as string | undefined
       );
-      return c.json(result);
+      return res.json(result);
     } else if (body.grant_type === "refresh_token") {
       const result = await refreshAccessToken(
         TENANT_ID!,
@@ -347,262 +331,87 @@ app.post("/token", async (c) => {
         CLIENT_ID!,
         CLIENT_SECRET!
       );
-      return c.json(result);
+      return res.json(result);
     }
 
-    return c.json({ error: "unsupported_grant_type" }, 400);
+    return res.status(400).json({ error: "unsupported_grant_type" });
   } catch (error) {
     logger.error("Error in token exchange", {
       error: error instanceof Error ? error.message : String(error),
     });
-    return c.json({ error: "Token exchange failed" }, 400);
+    return res.status(400).json({ error: "Token exchange failed" });
   }
 });
 
 // Microsoft Graph MCP endpoint with built-in auth logic
 
-app.post("/mcp", async (c) => {
-  logger.info("MCP endpoint hit - starting request processing", {
-    contentType: c.req.header("Content-Type"),
-    contentLength: c.req.header("Content-Length"),
-    userAgent: c.req.header("User-Agent"),
-  });
-
-  try {
-    // Parse JSON-RPC request first
-    let request;
-    try {
-      request = await c.req.json();
-      logger.info("MCP endpoint - JSON-RPC request parsed", {
-        jsonrpc: request.jsonrpc,
-        id: request.id,
-        method: request.method,
-        hasParams: !!request.params,
-      });
-    } catch (parseError) {
-      logger.error("MCP endpoint - failed to parse JSON-RPC request", {
-        error:
-          parseError instanceof Error ? parseError.message : String(parseError),
-      });
-      return c.json({ error: "Invalid JSON-RPC request" }, 400);
-    }
-
-    // Check if this method requires authentication
-    const publicMethods = ["initialize", "ping", "tools/list"];
-    const protectedMethods = ["tools/call"];  
-    const allSupportedMethods = [...publicMethods, ...protectedMethods];
-    
-    // Check if method is supported first
-    if (!allSupportedMethods.includes(request.method)) {
-      logger.error("MCP endpoint - unsupported method", {
-        method: request.method,
-        id: request.id
-      });
-      return c.json({
-        jsonrpc: "2.0",
-        id: request.id,
-        error: {
-          code: -32601,
-          message: `Method not found: ${request.method}`
-        }
-      });
-    }
-    
-    const requiresAuth = !publicMethods.includes(request.method);
-    
-    let token = "";
-    let env: Env;
-    let auth: MSGraphAuthContext;
-
-    if (requiresAuth) {
-      // Extract token from Authorization header for authenticated methods
-      const authHeader = c.req.header("Authorization");
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        logger.warn("MCP endpoint - missing auth for protected method", {
-          method: request.method,
-          hasAuthHeader: !!authHeader
-        });
-        
-        // Add WWW-Authenticate header as required by RFC9728 Section 5.1
-        const protocol = c.req.header("x-forwarded-proto") || "https";
-        const host = c.req.header("host");
-        const resourceMetadataUrl = `${protocol}://${host}/.well-known/oauth-protected-resource`;
-        
-        c.header("WWW-Authenticate", `Bearer realm="MCP", resource_metadata_url="${resourceMetadataUrl}"`);
-        
-        return c.json({
-          jsonrpc: "2.0",
-          id: request.id,
-          error: {
-            code: -32002,
-            message: "Authentication required for this method"
-          }
-        }, 401);
-      }
-      
-      token = authHeader.replace("Bearer ", "");
-      logger.info("MCP endpoint - token extracted", {
-        tokenLength: token.length,
-        tokenPrefix: token.substring(0, 10) + "...",
-      });
-
-      // Create auth context for authenticated requests
-      env = {
-        TENANT_ID,
-        CLIENT_ID,
-        CLIENT_SECRET,
-        ACCESS_TOKEN: token,
-      } as Env;
-
-      auth = {
-        accessToken: token,
-      };
-    } else {
-      // For public methods, create minimal auth context
-      env = {
-        TENANT_ID,
-        CLIENT_ID,
-        CLIENT_SECRET,
-      } as Env;
-
-      auth = {
-        accessToken: "", // Empty for public methods
-      };
-    }
-
-    logger.info("MCP endpoint - processing JSON-RPC request", {
-      method: request.method,
-      id: request.id,
-      hasParams: !!request.params,
-      requiresAuth
-    });
-
-    // Process the JSON-RPC request directly
-    let result;
-    try {
-      switch (request.method) {
-        case 'initialize':
-          // MCP initialization - return server capabilities
-          result = {
-            protocolVersion: "2024-11-05",
-            capabilities: {
-              tools: {},
-              logging: {}
-            },
-            serverInfo: {
-              name: "Microsoft Graph MCP Server",
-              version: "1.0.0"
-            }
-          };
-          break;
-
-        case 'tools/list': {
-          // Return the list of registered tools dynamically
-          const mcp = new MSGraphMCP(env, auth);
-          result = {
-            tools: mcp.getAvailableTools()
-          };
-          break;
-        }
-
-        case 'tools/call': {
-          // Call a specific tool using the MCP server's registered tools
-          if (!request.params?.name) {
-            throw new Error("Tool name is required");
-          }
-          
-          // Create MSGraphMCP instance with auth context for tool calls
-          const mcp = new MSGraphMCP(env, auth);
-          // Access server to ensure it's initialized
-          void mcp.server;
-          
-          // Call the tool through our direct tool handler
-          logger.info("MCP endpoint - tool call requested", {
-            toolName: request.params.name,
-            arguments: request.params.arguments
-          });
-          
-          try {
-            // Call the tool directly using our stored handlers
-            result = await mcp.callTool(request.params.name, request.params.arguments || {});
-          } catch (error) {
-            logger.error("Tool call failed", { error: error instanceof Error ? error.message : String(error) });
-            throw error;
-          }
-          
-          break;
-        }
-
-        case 'ping':
-          // Health check
-          result = { status: "ok" };
-          break;
-      }
-
-      logger.info("MCP endpoint - request processed successfully", {
-        method: request.method,
-        id: request.id,
-        resultType: typeof result
-      });
-
-      return c.json({
-        jsonrpc: "2.0",
-        id: request.id,
-        result
-      });
-
-    } catch (methodError) {
-      logger.error("MCP endpoint - method execution failed", {
-        method: request.method,
-        id: request.id,
-        error: methodError instanceof Error ? methodError.message : String(methodError)
-      });
-
-      return c.json({
-        jsonrpc: "2.0",
-        id: request.id,
-        error: {
-          code: -32603,
-          message: methodError instanceof Error ? methodError.message : "Internal error"
-        }
-      });
-    }
-  } catch (error) {
-    logger.error("MCP request failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return c.json({ error: "MCP request failed" }, 500);
-  }
+// Set up MCP streamable HTTP using SDK example pattern
+const mcpServer = new GraphMCPServer(
+  new MCPServerCore(
+    { name: "mcp-server", version: "1.0.0" },
+    { capabilities: { tools: {}, logging: {} } }
+  )
+);
+const MCP_ENDPOINT = "/mcp";
+app.post(MCP_ENDPOINT, async (req: Request, res: Response) => {
+  await mcpServer.handlePostRequest(req, res);
 });
+app.get(MCP_ENDPOINT, async (req: Request, res: Response) => {
+  await mcpServer.handleGetRequest(req, res);
+});
+
+// Prewarm: register tools at startup to avoid first-request latency
+try {
+  const prewarmEnv: Env = {
+    TENANT_ID: process.env.TENANT_ID,
+    CLIENT_ID: process.env.CLIENT_ID,
+    CLIENT_SECRET: process.env.CLIENT_SECRET,
+    REDIRECT_URI: process.env.REDIRECT_URI,
+    AUTH_BASE_URL: process.env.AUTH_BASE_URL,
+    GRAPH_BASE_URL: process.env.GRAPH_BASE_URL,
+    USE_CLIENT_TOKEN: process.env.USE_CLIENT_TOKEN,
+    USE_CERTIFICATE: process.env.USE_CERTIFICATE,
+    USE_INTERACTIVE: process.env.USE_INTERACTIVE,
+    USE_GRAPH_BETA: process.env.USE_GRAPH_BETA,
+    CERTIFICATE_PATH: process.env.CERTIFICATE_PATH,
+    CERTIFICATE_PASSWORD: process.env.CERTIFICATE_PASSWORD,
+    SCOPES: process.env.SCOPES,
+    PORT: process.env.PORT,
+    ACCESS_TOKEN: "",
+  } as Env;
+  const prewarmMcp = new MSGraphMCP(prewarmEnv, { accessToken: "" });
+  const tools = prewarmMcp.getAvailableTools();
+  logger.info("Prewarmed MCP tool registry", { count: tools.length });
+} catch (err) {
+  logger.warn("Tool prewarm failed (continuing)", {
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
 
 // Health check endpoint
-app.get("/", (c) => {
+app.get("/", (req: Request, res: Response) => {
   logger.info("Health check endpoint hit - root path");
-  return c.text("Microsoft Graph MCP Server is running");
+  res.setHeader("Content-Type", "text/plain");
+  return res.send("Microsoft Graph MCP Server is running");
 });
 
-app.get("/health", (c) => {
+app.get("/health", (req: Request, res: Response) => {
   logger.info("Health check endpoint hit - /health path");
-  return c.json({ status: "ok", service: "msgraph-mcp" });
+  return res.json({ status: "ok", service: "msgraph-mcp" });
 });
 
-serve(
-  {
-    fetch: app.fetch,
-    port: parseInt(process.env.PORT || "3001"),
-  },
-  (info) => {
-    logger.info("🚀 Microsoft Graph MCP Server started successfully", {
-      port: info.port,
-      address: info.address,
-      environment: {
-        NODE_ENV: process.env.NODE_ENV,
-        PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL,
-        hasTenantId: !!process.env.TENANT_ID,
-        hasClientId: !!process.env.CLIENT_ID,
-        hasClientSecret: !!process.env.CLIENT_SECRET,
-      },
-    });
-    console.log(`🚀 Server running on http://localhost:${info.port}`);
-  }
-);
+const PORT = parseInt(process.env.PORT || "3001", 10);
+app.listen(PORT, () => {
+  logger.info("🚀 Microsoft Graph MCP Server started successfully", {
+    port: PORT,
+    address: "0.0.0.0",
+    environment: {
+      NODE_ENV: process.env.NODE_ENV,
+      PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL,
+      hasTenantId: !!process.env.TENANT_ID,
+      hasClientId: !!process.env.CLIENT_ID,
+      hasClientSecret: !!process.env.CLIENT_SECRET,
+    },
+  });
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+});
