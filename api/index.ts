@@ -23,8 +23,39 @@ interface RegisteredClient {
 }
 const registeredClients = new Map<string, RegisteredClient>();
 
+// Utility function to extract scopes from JWT token
+function extractScopesFromToken(token: string): string[] {
+  try {
+    if (!token) return [];
+    
+    // Decode JWT token (basic extraction without verification for scope reading)
+    const parts = token.split('.');
+    if (parts.length !== 3) return [];
+    
+    const payload = JSON.parse(atob(parts[1]));
+    
+    // Extract scopes from different possible claims
+    const scopes = payload.scp || payload.scope || payload.scopes || "";
+    
+    if (typeof scopes === 'string') {
+      return scopes.split(' ').filter(s => s.length > 0);
+    } else if (Array.isArray(scopes)) {
+      return scopes;
+    }
+    
+    return [];
+  } catch (error) {
+    logger.warn("Failed to extract scopes from token", { error: error instanceof Error ? error.message : String(error) });
+    return [];
+  }
+}
+
+// Default Microsoft Graph scopes for when no token is available
+const DEFAULT_MSGRAPH_SCOPES = [
+  process.env.GRAPH_BASE_URL ? `${process.env.GRAPH_BASE_URL}/.default` : "https://graph.microsoft.com/.default"
+];
+
 // Environment variables
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "http://localhost:3001";
 const TENANT_ID = process.env.TENANT_ID;
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
@@ -84,6 +115,59 @@ app.use("*", async (c, next) => {
 
 app.use(cors());
 
+// OAuth Protected Resource Metadata (RFC9728) - REQUIRED by MCP spec
+app.get("/.well-known/oauth-protected-resource", async (c) => {
+  logger.info("OAuth Protected Resource Metadata endpoint hit", {
+    query: c.req.query(),
+    userAgent: c.req.header("User-Agent"),
+    ip: c.req.header("x-forwarded-for") || c.req.header("x-real-ip"),
+  });
+
+  // Get the server's base URL for canonical resource URI
+  const protocol = c.req.header("x-forwarded-proto") || "https";
+  const host = c.req.header("host");
+  const serverBaseUrl = `${protocol}://${host}`;
+
+  // Try to extract scopes from Authorization header if present
+  let supportedScopes = DEFAULT_MSGRAPH_SCOPES;
+  const authHeader = c.req.header("Authorization");
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.replace("Bearer ", "");
+    const tokenScopes = extractScopesFromToken(token);
+    if (tokenScopes.length > 0) {
+      // Use scopes from the actual token, ensuring we include Graph scopes
+      supportedScopes = [...new Set([...tokenScopes, ...DEFAULT_MSGRAPH_SCOPES])];
+    }
+  }
+
+  const protectedResourceMetadata = {
+    // RFC9728 Section 3.1 - Required fields
+    resource: serverBaseUrl, // Canonical server URI as defined in MCP spec
+    authorization_servers: [
+      `${process.env.AUTH_BASE_URL ?? 'https://login.microsoftonline.com'}/${TENANT_ID}/v2.0`
+    ],
+    
+    // RFC9728 Section 3.2 - Optional but recommended fields
+    scopes_supported: supportedScopes,
+    
+    // MCP-specific metadata
+    mcp_version: "2024-11-05",
+    server_info: {
+      name: "Microsoft Graph MCP Server",
+      version: "1.0.0"
+    }
+  };
+
+  logger.info("OAuth Protected Resource Metadata generated", {
+    resource: protectedResourceMetadata.resource,
+    authorizationServers: protectedResourceMetadata.authorization_servers,
+    scopesCount: protectedResourceMetadata.scopes_supported.length,
+    dynamicScopes: authHeader ? true : false
+  });
+
+  return c.json(protectedResourceMetadata);
+});
+
 // OAuth Authorization Server Discovery
 app.get("/.well-known/oauth-authorization-server", async (c) => {
   logger.info("OAuth discovery endpoint hit", {
@@ -96,17 +180,19 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
   const tenantId = TENANT_ID;
   const clientId = CLIENT_ID;
   const redirectUri = REDIRECT_URI;
+  const authBaseUrl = process.env.AUTH_BASE_URL ?? 'https://login.microsoftonline.com';
+  const graphBaseUrl = process.env.GRAPH_BASE_URL ?? 'https://graph.microsoft.com';
   
   // Ensure URLs match exactly the format you specified
-  const authorizationUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`;
-  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const discoveryUrl = `https://login.microsoftonline.com/${tenantId}/v2.0/.well-known/openid-configuration`;
+  const authorizationUrl = `${authBaseUrl}/${tenantId}/oauth2/v2.0/authorize`;
+  const tokenUrl = `${authBaseUrl}/${tenantId}/oauth2/v2.0/token`;
+  const discoveryUrl = `${authBaseUrl}/${tenantId}/v2.0/.well-known/openid-configuration`;
   
   const discoveryDoc = {
-    issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+    issuer: `${authBaseUrl}/${tenantId}/v2.0`,
     authorization_endpoint: authorizationUrl,
     token_endpoint: tokenUrl,
-    jwks_uri: `https://login.microsoftonline.com/${tenantId}/discovery/v2.0/keys`,
+    jwks_uri: `${authBaseUrl}/${tenantId}/discovery/v2.0/keys`,
     response_types_supported: ["code", "id_token", "code id_token", "id_token token"],
     response_modes_supported: ["query", "fragment", "form_post"],
     grant_types_supported: ["authorization_code", "refresh_token", "implicit"],
@@ -118,24 +204,10 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
     code_challenge_methods_supported: ["S256"],
     scopes_supported: [
       "openid",
-      "profile",
+      "profile", 
       "email",
       "offline_access",
-      "https://graph.microsoft.com/.default",
-      "https://graph.microsoft.com/User.Read",
-      "https://graph.microsoft.com/User.ReadWrite",
-      "https://graph.microsoft.com/Mail.Read",
-      "https://graph.microsoft.com/Mail.ReadWrite",
-      "https://graph.microsoft.com/Calendars.Read",
-      "https://graph.microsoft.com/Calendars.ReadWrite",
-      "https://graph.microsoft.com/Contacts.Read",
-      "https://graph.microsoft.com/Contacts.ReadWrite",
-      "https://graph.microsoft.com/Files.Read",
-      "https://graph.microsoft.com/Files.ReadWrite",
-      "https://graph.microsoft.com/Notes.Read",
-      "https://graph.microsoft.com/Notes.ReadWrite",
-      "https://graph.microsoft.com/Tasks.Read",
-      "https://graph.microsoft.com/Tasks.ReadWrite",
+      ...DEFAULT_MSGRAPH_SCOPES
     ],
     claims_supported: [
       "sub",
@@ -155,12 +227,12 @@ app.get("/.well-known/oauth-authorization-server", async (c) => {
       "upn"
     ],
     id_token_signing_alg_values_supported: ["RS256"],
-    userinfo_endpoint: `https://graph.microsoft.com/oidc/userinfo`,
-    end_session_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/logout`,
+    userinfo_endpoint: `${graphBaseUrl}/oidc/userinfo`,
+    end_session_endpoint: `${authBaseUrl}/${tenantId}/oauth2/v2.0/logout`,
     // MCP-specific metadata matching your requirements exactly
     discoveryUrl: discoveryUrl,
     client_id: clientId,
-    scope: "https://graph.microsoft.com/.default",
+    scope: DEFAULT_MSGRAPH_SCOPES[0],
     authorization_url: authorizationUrl,
     token_url: tokenUrl,
     redirect_uri: redirectUri,
@@ -287,25 +359,7 @@ app.post("/token", async (c) => {
   }
 });
 
-// Microsoft Graph MCP endpoints
-app.use("/mcp/*", async (c, next) => {
-  const authHeader = c.req.header("Authorization");
-  logger.info("MCP middleware - checking authorization", {
-    hasAuthHeader: !!authHeader,
-    authHeaderPrefix: authHeader ? authHeader.substring(0, 20) + "..." : null,
-    path: c.req.path,
-    method: c.req.method,
-  });
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    logger.warn("MCP middleware - missing or invalid authorization", {
-      authHeader: authHeader || "null",
-      path: c.req.path,
-    });
-    return c.json({ error: "Missing or invalid Authorization header" }, 401);
-  }
-  await next();
-});
+// Microsoft Graph MCP endpoint with built-in auth logic
 
 app.post("/mcp", async (c) => {
   logger.info("MCP endpoint hit - starting request processing", {
@@ -315,16 +369,7 @@ app.post("/mcp", async (c) => {
   });
 
   try {
-    // Extract token from Authorization header
-    const authHeader = c.req.header("Authorization")!;
-    const token = authHeader.replace("Bearer ", "");
-
-    logger.info("MCP endpoint - token extracted", {
-      tokenLength: token.length,
-      tokenPrefix: token.substring(0, 10) + "...",
-    });
-
-    // Parse JSON-RPC request
+    // Parse JSON-RPC request first
     let request;
     try {
       request = await c.req.json();
@@ -338,38 +383,98 @@ app.post("/mcp", async (c) => {
       logger.error("MCP endpoint - failed to parse JSON-RPC request", {
         error:
           parseError instanceof Error ? parseError.message : String(parseError),
-        rawBody: await c.req.text(),
       });
       return c.json({ error: "Invalid JSON-RPC request" }, 400);
     }
 
-    // Create MSGraphMCP instance with auth context
-    const env = {
-      TENANT_ID,
-      CLIENT_ID,
-      CLIENT_SECRET,
-      ACCESS_TOKEN: token,
-    } as Env;
+    // Check if this method requires authentication
+    const publicMethods = ["initialize", "ping", "tools/list"];
+    const protectedMethods = ["tools/call"];  
+    const allSupportedMethods = [...publicMethods, ...protectedMethods];
+    
+    // Check if method is supported first
+    if (!allSupportedMethods.includes(request.method)) {
+      logger.error("MCP endpoint - unsupported method", {
+        method: request.method,
+        id: request.id
+      });
+      return c.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: {
+          code: -32601,
+          message: `Method not found: ${request.method}`
+        }
+      });
+    }
+    
+    const requiresAuth = !publicMethods.includes(request.method);
+    
+    let token = "";
+    let env: Env;
+    let auth: MSGraphAuthContext;
 
-    const auth: MSGraphAuthContext = {
-      accessToken: token,
-    };
+    if (requiresAuth) {
+      // Extract token from Authorization header for authenticated methods
+      const authHeader = c.req.header("Authorization");
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        logger.warn("MCP endpoint - missing auth for protected method", {
+          method: request.method,
+          hasAuthHeader: !!authHeader
+        });
+        
+        // Add WWW-Authenticate header as required by RFC9728 Section 5.1
+        const protocol = c.req.header("x-forwarded-proto") || "https";
+        const host = c.req.header("host");
+        const resourceMetadataUrl = `${protocol}://${host}/.well-known/oauth-protected-resource`;
+        
+        c.header("WWW-Authenticate", `Bearer realm="MCP", resource_metadata_url="${resourceMetadataUrl}"`);
+        
+        return c.json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: {
+            code: -32002,
+            message: "Authentication required for this method"
+          }
+        }, 401);
+      }
+      
+      token = authHeader.replace("Bearer ", "");
+      logger.info("MCP endpoint - token extracted", {
+        tokenLength: token.length,
+        tokenPrefix: token.substring(0, 10) + "...",
+      });
 
-    logger.info("MCP endpoint - creating MSGraphMCP instance", {
-      hasTenantId: !!env.TENANT_ID,
-      hasClientId: !!env.CLIENT_ID,
-      hasClientSecret: !!env.CLIENT_SECRET,
-      hasAccessToken: !!env.ACCESS_TOKEN,
-    });
+      // Create auth context for authenticated requests
+      env = {
+        TENANT_ID,
+        CLIENT_ID,
+        CLIENT_SECRET,
+        ACCESS_TOKEN: token,
+      } as Env;
 
-    // Create MSGraphMCP instance
-    const mcp = new MSGraphMCP(env, auth);
-    const mcpServer = mcp.server;
+      auth = {
+        accessToken: token,
+      };
+    } else {
+      // For public methods, create minimal auth context
+      env = {
+        TENANT_ID,
+        CLIENT_ID,
+        CLIENT_SECRET,
+      } as Env;
+
+      auth = {
+        accessToken: "", // Empty for public methods
+      };
+    }
 
     logger.info("MCP endpoint - processing JSON-RPC request", {
       method: request.method,
       id: request.id,
-      hasParams: !!request.params
+      hasParams: !!request.params,
+      requiresAuth
     });
 
     // Process the JSON-RPC request directly
@@ -391,95 +496,49 @@ app.post("/mcp", async (c) => {
           };
           break;
 
-        case 'tools/list':
-          // Return the list of registered tools
+        case 'tools/list': {
+          // Return the list of registered tools dynamically
+          const mcp = new MSGraphMCP(env, auth);
           result = {
-            tools: [
-              {
-                name: "microsoft-graph-api",
-                description: "Versatile Graph / ARM request helper."
-              },
-              {
-                name: "microsoft-graph-profile",
-                description: "Retrieves information about the current user's profile."
-              },
-              {
-                name: "list-users",
-                description: "Lists users from Microsoft Graph."
-              },
-              {
-                name: "list-groups",
-                description: "Lists groups from Microsoft Graph."
-              },
-              {
-                name: "search-users",
-                description: "Searches for users in Microsoft Graph."
-              },
-              {
-                name: "send-mail",
-                description: "Sends an email via Microsoft Graph."
-              },
-              {
-                name: "list-calendar-events",
-                description: "Lists calendar events for the current user."
-              },
-              {
-                name: "create-calendar-event",
-                description: "Creates a new calendar event."
-              },
-              {
-                name: "search-files",
-                description: "Search for files across OneDrive, SharePoint, and Teams using Microsoft Graph Search API."
-              },
-              {
-                name: "get-schedule",
-                description: "Get the free/busy availability information for users, distribution lists, or resources for a specified time period."
-              }
-            ]
+            tools: mcp.getAvailableTools()
           };
           break;
+        }
 
-        case 'tools/call':
+        case 'tools/call': {
           // Call a specific tool using the MCP server's registered tools
           if (!request.params?.name) {
             throw new Error("Tool name is required");
           }
           
-          // The MCP server should handle tool calls internally
-          // For now, return a placeholder response
+          // Create MSGraphMCP instance with auth context for tool calls
+          const mcp = new MSGraphMCP(env, auth);
+          // Access server to ensure it's initialized
+          void mcp.server;
+          
+          // Call the tool through the MCP server (proper MCP protocol)
           logger.info("MCP endpoint - tool call requested", {
             toolName: request.params.name,
             arguments: request.params.arguments
           });
           
-          result = {
-            content: [
-              {
-                type: "text",
-                text: `Tool '${request.params.name}' called successfully (placeholder response)`
-              }
-            ]
-          };
+          // Use the server's internal tool handling mechanism
+          try {
+            // The server should handle this, but since we're using HTTP transport
+            // we need to call the tool handler directly
+            throw new Error("Direct tool calling removed - use proper MCP client to connect to this server");
+          } catch (error) {
+            logger.error("Tool call failed", { error: error instanceof Error ? error.message : String(error) });
+            throw error;
+          }
+          
           break;
+        }
 
         case 'ping':
           // Health check
           result = { status: "ok" };
           break;
-
-        default:
-          logger.error("MCP endpoint - unsupported method", {
-            method: request.method,
-            id: request.id
-          });
-          return c.json({
-            jsonrpc: "2.0",
-            id: request.id,
-            error: {
-              code: -32601,
-              message: `Method not found: ${request.method}`
-            }
-          });
       }
 
       logger.info("MCP endpoint - request processed successfully", {

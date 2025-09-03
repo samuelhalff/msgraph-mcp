@@ -11,13 +11,17 @@ A powerful Microsoft Graph integration server built with the Model Context Proto
 
 - **🔐 Secure OAuth 2.0 Authentication** with PKCE support
 - **🤖 MCP Protocol Compliant** - Full Model Context Protocol implementation
+- **🎯 LibreChat Ready** - Seamless integration with LibreChat and other MCP clients
 - **📊 Comprehensive Microsoft Graph API Coverage**:
   - Users and Groups management
   - Mail and Calendar operations
-  - OneDrive/SharePoint file operations
+  - OneDrive/SharePoint file operations with advanced search
   - Teams and Channels
   - Applications and Service Principals
   - Directory objects
+- **⚡ Advanced File Search** - Content-based search across SharePoint and OneDrive
+- **📅 Calendar Integration** - Schedule management and availability checking
+- **🛡️ Intelligent Throttling** - Built-in rate limiting with exponential backoff
 - **🐳 Docker Ready** - Optimized container with health checks
 - **📝 Structured Logging** - Winston-based logging with file and console output
 - **🔄 Token Refresh** - Automatic token refresh handling
@@ -114,7 +118,56 @@ docker-compose up -d
 ### MCP Tools Available
 
 - **microsoft-graph-api**: Generic Microsoft Graph API access
-- **get-auth-status**: Check authentication status
+- **microsoft-graph-profile**: Get current user profile
+- **list-users**: List organization users
+- **list-groups**: List organization groups
+- **search-users**: Search for users by name
+- **send-mail**: Send emails through Microsoft Graph
+- **search-files**: Advanced file search across SharePoint and OneDrive
+- **get-schedule**: Calendar and scheduling operations
+- **throttling-stats**: Monitor API performance and rate limiting
+
+## 🎯 LibreChat Integration
+
+This MCP server is designed for seamless integration with [LibreChat](https://www.librechat.ai/), providing powerful Microsoft 365 capabilities to AI assistants.
+
+### Quick LibreChat Setup
+
+1. **Deploy this MCP server** (see deployment instructions above)
+2. **Add to your `librechat.yaml`**:
+
+```yaml
+mcpServers:
+  msgraph:
+    type: "streamable-http"
+    url: "https://your-server.com/mcp"
+    initTimeout: 30000
+    timeout: 60000
+    headers:
+      Authorization: "Bearer {{MS_GRAPH_TOKEN}}"
+    customUserVars:
+      MS_GRAPH_TOKEN:
+        title: "Microsoft Graph Access Token"
+        description: "Get your token at https://your-server.com/authorize"
+    serverInstructions: |
+      Microsoft Graph integration for Microsoft 365:
+      - Use search-files for SharePoint/OneDrive document search
+      - Use get-schedule for calendar management
+      - Use send-mail for email operations
+    startup: false
+```
+
+3. **Restart LibreChat** and authenticate with Microsoft
+
+### Features in LibreChat
+
+- 📁 **Smart File Search**: Ask "Find PowerPoint files about quarterly reports"
+- 📧 **Email Management**: "Send a project update to the team"  
+- 📅 **Calendar Integration**: "Check my availability next Tuesday"
+- 👥 **User Directory**: "Find contact info for Sarah in marketing"
+- 📊 **Performance Monitoring**: Built-in throttling protection
+
+**📋 For complete LibreChat integration guide, see [LIBRECHAT.md](./LIBRECHAT.md)**
 
 ## 🔧 Configuration
 

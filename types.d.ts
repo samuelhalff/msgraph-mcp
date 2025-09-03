@@ -9,11 +9,21 @@ export interface Env {
     CERTIFICATE_PATH?: string
     CERTIFICATE_PASSWORD?: string
     MS_GRAPH_CLIENT_ID?: string
-    OAUTH_SCOPES?: string
+    SCOPES?: string
+    GRAPH_API_VERSION?: string
     USE_GRAPH_BETA?: string
     USE_INTERACTIVE?: string
     USE_CLIENT_TOKEN?: string
     USE_CERTIFICATE?: string
+    
+    // Server configuration
+    PORT?: string
+    HOST?: string
+    PUBLIC_BASE_URL?: string
+    
+    // API endpoints
+    GRAPH_BASE_URL?: string
+    AUTH_BASE_URL?: string
 }
 
 export type Todo = {

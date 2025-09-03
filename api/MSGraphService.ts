@@ -6,6 +6,7 @@ import { ClientCertificateCredential, ClientSecretCredential } from '@azure/iden
 import { PublicClientApplication, InteractionType } from '@azure/msal-browser';
 import { Env, MSGraphAuthContext } from '../types.js';
 import logger from './lib/logger.js';
+import { throttlingManager } from './lib/throttling-manager.js';
 
 // Custom options interface to include all required properties
 export interface MSGraphServiceOptions extends ClientOptions, Partial<AuthCodeMSALBrowserAuthenticationProviderOptions> {
@@ -20,6 +21,12 @@ export interface MSGraphServiceOptions extends ClientOptions, Partial<AuthCodeMS
 
 export class MSGraphService {
   private client: Client;
+
+  /** Get default Microsoft Graph scopes based on environment configuration */
+  private getDefaultScopes(env: Env): string[] {
+    const graphBaseUrl = env.GRAPH_BASE_URL ?? 'https://graph.microsoft.com';
+    return [`${graphBaseUrl}/.default`];
+  }
 
   constructor(
     private env: Env,
@@ -58,21 +65,22 @@ export class MSGraphService {
         certificatePassword: options.certificatePassword,
       });
       authProvider = new TokenCredentialAuthenticationProvider(credential, {
-        scopes: env.OAUTH_SCOPES?.split(' ') ?? ['https://graph.microsoft.com/.default'],
+        scopes: env.SCOPES?.split(' ') ?? this.getDefaultScopes(env),
       });
     } else if (options.mode === 'Interactive') {
       logger.info('Using Interactive mode');
       // For browser-based authentication, we need to use MSAL browser library
+      const authBaseUrl = env.AUTH_BASE_URL ?? 'https://login.microsoftonline.com';
       const msalConfig = {
         auth: {
           clientId: options.clientId,
-          authority: `https://login.microsoftonline.com/${options.tenantId}`,
-          redirectUri: options.redirectUri ?? env.REDIRECT_URI ?? 'http://mcp-server:3001/authorize',
+          authority: `${authBaseUrl}/${options.tenantId}`,
+          redirectUri: options.redirectUri ?? env.REDIRECT_URI ?? `http://localhost:${env.PORT ?? '3001'}/authorize`,
         },
       };
       const msalInstance = new PublicClientApplication(msalConfig);
       authProvider = new AuthCodeMSALBrowserAuthenticationProvider(msalInstance, {
-        scopes: env.OAUTH_SCOPES?.split(' ') ?? ['https://graph.microsoft.com/.default'],
+        scopes: env.SCOPES?.split(' ') ?? this.getDefaultScopes(env),
         interactionType: InteractionType.Popup,
         account: null as any, // Will be set by MSAL during authentication
       });
@@ -84,7 +92,7 @@ export class MSGraphService {
       }
       const credential = new ClientSecretCredential(options.tenantId, options.clientId, options.clientSecret);
       authProvider = new TokenCredentialAuthenticationProvider(credential, {
-        scopes: env.OAUTH_SCOPES?.split(' ') ?? ['https://graph.microsoft.com/.default'],
+        scopes: env.SCOPES?.split(' ') ?? this.getDefaultScopes(env),
       });
     }
 
@@ -97,13 +105,16 @@ export class MSGraphService {
     method: string,
     body?: any,
     queryParams?: Record<string, string>,
-    version: 'v1.0' | 'beta' = 'v1.0',
+    version?: 'v1.0' | 'beta',
     fetchAll = false,
     consistencyLevel?: string
   ): Promise<any> {
-    logger.info('Executing genericGraphRequest', { path, method, version, fetchAll, consistencyLevel });
-    try {
-      const request = this.client.api(path).version(version);
+    // Use environment variable or default to v1.0
+    const apiVersion = version ?? (this.env.USE_GRAPH_BETA === 'true' ? 'beta' : 'v1.0');
+    logger.info('Executing genericGraphRequest with throttling', { path, method, version: apiVersion, fetchAll, consistencyLevel });
+    
+    return throttlingManager.executeWithRetry(async () => {
+      const request = this.client.api(path).version(apiVersion);
       if (queryParams) {
         request.query(queryParams);
       }
@@ -138,7 +149,16 @@ export class MSGraphService {
         const allResults = response.value ? [...response.value] : [];
         let nextLink = response['@odata.nextLink'];
         while (nextLink) {
-          const nextResponse = await this.client.api(nextLink).get();
+          // Use throttling for pagination requests too
+          const nextResponse = await throttlingManager.executeWithRetry(
+            async () => ({ 
+              data: await this.client.api(nextLink).get(), 
+              status: 200, 
+              headers: {} 
+            }),
+            nextLink,
+            'get'
+          );
           if (nextResponse.value) {
             allResults.push(...nextResponse.value);
           }
@@ -148,12 +168,13 @@ export class MSGraphService {
       }
 
       logger.info('genericGraphRequest successful', { path, method });
-      return response;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      logger.error('genericGraphRequest error', { msg, path, method });
-      throw new Error(msg);
-    }
+      
+      return {
+        data: response,
+        status: 200,
+        headers: {}
+      };
+    }, path, method);
   }
 
   async azureRequest(
@@ -237,7 +258,7 @@ export class MSGraphService {
   async getUsers(queryParams?: Record<string, string>, fetchAll = false): Promise<any> {
     logger.info('Executing getUsers', { queryParams, fetchAll });
     try {
-      const response = await this.genericGraphRequest('/users', 'get', undefined, queryParams, 'v1.0', fetchAll);
+      const response = await this.genericGraphRequest('/users', 'get', undefined, queryParams, undefined, fetchAll);
       logger.info('getUsers successful');
       return response;
     } catch (e) {
@@ -250,7 +271,7 @@ export class MSGraphService {
   async getGroups(queryParams?: Record<string, string>, fetchAll = false): Promise<any> {
     logger.info('Executing getGroups', { queryParams, fetchAll });
     try {
-      const response = await this.genericGraphRequest('/groups', 'get', undefined, queryParams, 'v1.0', fetchAll);
+      const response = await this.genericGraphRequest('/groups', 'get', undefined, queryParams, undefined, fetchAll);
       logger.info('getGroups successful');
       return response;
     } catch (e) {
@@ -263,7 +284,7 @@ export class MSGraphService {
   async getApplications(queryParams?: Record<string, string>, fetchAll = false): Promise<any> {
     logger.info('Executing getApplications', { queryParams, fetchAll });
     try {
-      const response = await this.genericGraphRequest('/applications', 'get', undefined, queryParams, 'v1.0', fetchAll);
+      const response = await this.genericGraphRequest('/applications', 'get', undefined, queryParams, undefined, fetchAll);
       logger.info('getApplications successful');
       return response;
     } catch (e) {
