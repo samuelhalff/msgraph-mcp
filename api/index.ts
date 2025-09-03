@@ -9,7 +9,6 @@ import {
 } from "./lib/msgraph-auth.js";
 import logger from "./lib/logger.js";
 import { Env, MSGraphAuthContext } from "../types.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 // Store registered clients in memory (in production, use a database)
 interface RegisteredClient {
@@ -363,50 +362,154 @@ app.post("/mcp", async (c) => {
       hasAccessToken: !!env.ACCESS_TOKEN,
     });
 
-    // Create MSGraphMCP instance (for future use)
+    // Create MSGraphMCP instance
     const mcp = new MSGraphMCP(env, auth);
-    const server = mcp.server;
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined, // No sessions for stateless mode
+    const mcpServer = mcp.server;
+
+    logger.info("MCP endpoint - processing JSON-RPC request", {
+      method: request.method,
+      id: request.id,
+      hasParams: !!request.params
     });
 
-    // For now, return a simple response indicating the server is working
-    // TODO: Implement proper MCP request processing
-    logger.info(
-      "MCP endpoint - server created, returning placeholder response"
-    );
+    // Process the JSON-RPC request directly
+    let result;
+    try {
+      switch (request.method) {
+        case 'initialize':
+          // MCP initialization - return server capabilities
+          result = {
+            protocolVersion: "2024-11-05",
+            capabilities: {
+              tools: {},
+              logging: {}
+            },
+            serverInfo: {
+              name: "Microsoft Graph MCP Server",
+              version: "1.0.0"
+            }
+          };
+          break;
 
-    // Connect the server to the transport
-    await transport.start();
-    await server.connect(transport);
-    
-    // Handle the request by writing it to the transport and reading the response
-    const responsePromise = new Promise((resolve, reject) => {
-      // Set up message handler
-      const originalOnMessage = transport.onmessage;
-      transport.onmessage = (message) => {
-        try {
-          resolve(message);
-        } catch (error) {
-          reject(error);
-        } finally {
-          // Restore original handler
-          transport.onmessage = originalOnMessage;
+        case 'tools/list':
+          // Return the list of registered tools
+          result = {
+            tools: [
+              {
+                name: "microsoft-graph-api",
+                description: "Versatile Graph / ARM request helper."
+              },
+              {
+                name: "microsoft-graph-profile",
+                description: "Retrieves information about the current user's profile."
+              },
+              {
+                name: "list-users",
+                description: "Lists users from Microsoft Graph."
+              },
+              {
+                name: "list-groups",
+                description: "Lists groups from Microsoft Graph."
+              },
+              {
+                name: "search-users",
+                description: "Searches for users in Microsoft Graph."
+              },
+              {
+                name: "send-mail",
+                description: "Sends an email via Microsoft Graph."
+              },
+              {
+                name: "list-calendar-events",
+                description: "Lists calendar events for the current user."
+              },
+              {
+                name: "create-calendar-event",
+                description: "Creates a new calendar event."
+              },
+              {
+                name: "search-files",
+                description: "Search for files across OneDrive, SharePoint, and Teams using Microsoft Graph Search API."
+              },
+              {
+                name: "get-schedule",
+                description: "Get the free/busy availability information for users, distribution lists, or resources for a specified time period."
+              }
+            ]
+          };
+          break;
+
+        case 'tools/call':
+          // Call a specific tool using the MCP server's registered tools
+          if (!request.params?.name) {
+            throw new Error("Tool name is required");
+          }
+          
+          // The MCP server should handle tool calls internally
+          // For now, return a placeholder response
+          logger.info("MCP endpoint - tool call requested", {
+            toolName: request.params.name,
+            arguments: request.params.arguments
+          });
+          
+          result = {
+            content: [
+              {
+                type: "text",
+                text: `Tool '${request.params.name}' called successfully (placeholder response)`
+              }
+            ]
+          };
+          break;
+
+        case 'ping':
+          // Health check
+          result = { status: "ok" };
+          break;
+
+        default:
+          logger.error("MCP endpoint - unsupported method", {
+            method: request.method,
+            id: request.id
+          });
+          return c.json({
+            jsonrpc: "2.0",
+            id: request.id,
+            error: {
+              code: -32601,
+              message: `Method not found: ${request.method}`
+            }
+          });
+      }
+
+      logger.info("MCP endpoint - request processed successfully", {
+        method: request.method,
+        id: request.id,
+        resultType: typeof result
+      });
+
+      return c.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        result
+      });
+
+    } catch (methodError) {
+      logger.error("MCP endpoint - method execution failed", {
+        method: request.method,
+        id: request.id,
+        error: methodError instanceof Error ? methodError.message : String(methodError)
+      });
+
+      return c.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        error: {
+          code: -32603,
+          message: methodError instanceof Error ? methodError.message : "Internal error"
         }
-      };
-      
-      // Send the request
-      transport.send(request);
-    });
-    
-    const response = await responsePromise;
-    
-    logger.info("MCP endpoint - request processed", {
-      responseType: typeof response,
-      hasError: !!(response as any)?.error,
-    });
-
-    return c.json(response as any);
+      });
+    }
   } catch (error) {
     logger.error("MCP request failed", {
       error: error instanceof Error ? error.message : String(error),
