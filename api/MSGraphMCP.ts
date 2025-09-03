@@ -1,12 +1,93 @@
-/* -------------------------------------------------------------------- *
- *  src/MSGraphMCP.ts – Lean, stateless per-request MCP HTTP handler     *
- * -------------------------------------------------------------------- */
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { MSGraphService } from "./MSGraphService.js";
 import { Env, MSGraphAuthContext } from "../types.js";
 import logger from "./lib/logger.js";
+
+// Tool parameter interfaces
+interface GraphApiParams {
+  apiType?: "graph" | "azure";
+  path: string;
+  method?: string;
+  body?: Record<string, unknown>;
+  queryParams?: Record<string, string>;
+  apiVersion?: string;
+  subscriptionId?: string;
+  graphApiVersion?: "v1.0" | "beta";
+  fetchAll?: boolean;
+  consistencyLevel?: string;
+}
+
+interface UserGroupParams {
+  queryParams?: Record<string, string>;
+  fetchAll?: boolean;
+}
+
+interface SearchUsersParams {
+  query: string;
+}
+
+interface SendMailParams {
+  to: string;
+  subject: string;
+  body: string;
+}
+
+interface ListCalendarEventsParams {
+  startDateTime?: string;
+  endDateTime?: string;
+}
+
+interface CreateCalendarEventParams {
+  subject: string;
+  start: string;
+  end: string;
+  attendees?: string[];
+  body?: string;
+  location?: string;
+}
+
+interface DraftEmailParams {
+  subject?: string;
+  body?: string;
+  contentType?: "Text" | "HTML";
+  toRecipients?: string[];
+  ccRecipients?: string[];
+  bccRecipients?: string[];
+}
+
+interface UpcomingEventsParams {
+  numberOfEvents?: number;
+  startDateTime?: string;
+}
+
+interface CalendarEventParams {
+  subject: string;
+  startTime: string;
+  endTime: string;
+  attendees: string[];
+  body?: string;
+  location?: string;
+  isOnlineMeeting?: boolean;
+}
+
+interface SearchFilesParams {
+  query: string;
+  entityTypes?: string[];
+  size?: number;
+  from?: number;
+  fileTypes?: string[];
+  contentSource?: "default" | "sharepoint" | "onedrive";
+  sortBy?: "relevance" | "lastModifiedDateTime" | "name" | "size";
+  sortOrder?: "asc" | "desc";
+}
+
+interface GetScheduleParams {
+  schedules: string[];
+  startTime: string;
+  endTime: string;
+  availabilityViewInterval?: number;
+}
 
 export class MSGraphMCP {
   public readonly env: Env;
@@ -22,6 +103,12 @@ export class MSGraphMCP {
   private get svc(): MSGraphService {
     if (!this.#svc) {
       logger.info("Creating new MSGraphService instance");
+      
+      // Validate required environment variables
+      if (!this.env.TENANT_ID || !this.env.CLIENT_ID) {
+        throw new Error('TENANT_ID and CLIENT_ID are required');
+      }
+      
       this.#svc = new MSGraphService(this.env, this.auth, {
         tenantId: this.env.TENANT_ID,
         clientId: this.env.CLIENT_ID,
@@ -37,7 +124,7 @@ export class MSGraphMCP {
         redirectUri: this.env.REDIRECT_URI,
         certificatePath: this.env.CERTIFICATE_PATH,
         certificatePassword: this.env.CERTIFICATE_PASSWORD,
-      } as any);
+      });
     }
     return this.#svc;
   }
@@ -91,6 +178,51 @@ export class MSGraphMCP {
     }
   }
 
+  // Track tools as they're registered with the server
+  private toolRegistry = new Map<string, string>();
+
+  /** Register a tool with tracking */
+  private registerServerTool(
+    server: McpServer, 
+    name: string, 
+    schema: object, 
+    handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: "text", text: string }> }> | { content: Array<{ type: "text", text: string }> }
+  ) {
+    // Track the tool - safe type casting for known schema structure
+    const schemaWithDescription = schema as { description?: string; title?: string };
+    this.toolRegistry.set(name, schemaWithDescription.description || schemaWithDescription.title || `Microsoft Graph tool: ${name}`);
+    
+    // Register with the server
+    server.registerTool(name, schema, handler);
+  }
+
+  /** Get list of available tools from our registry */
+  getAvailableTools() {
+    // If no tools registered yet, build the server to populate the registry
+    if (this.toolRegistry.size === 0) {
+      // Access server getter to trigger tool registration
+      void this.server;
+      // Server is now created and tools are registered
+    }
+    
+    return Array.from(this.toolRegistry.entries()).map(([name, description]) => ({
+      name,
+      description
+    }));
+  }
+
+  /** Check if a tool exists */
+  hasTools(toolName: string): boolean {
+    // Ensure registry is populated
+    if (this.toolRegistry.size === 0) {
+      // Access server getter to trigger tool registration
+      void this.server;
+      // Server is now created and tools are registered
+    }
+    
+    return this.toolRegistry.has(toolName);
+  }
+
   /** Build and configure the McpServer with all tools */
   get server() {
     const server = new McpServer({
@@ -99,7 +231,8 @@ export class MSGraphMCP {
     });
 
     // 1) Universal Graph/Azure request
-    server.registerTool(
+    this.registerServerTool(
+      server,
       "microsoft-graph-api",
       {
         title: "Microsoft Graph API",
@@ -158,12 +291,13 @@ export class MSGraphMCP {
             ),
         },
       },
-      async (p) => {
+      async (args: Record<string, unknown>) => {
+        const p = args as unknown as GraphApiParams;
         try {
           if (p.apiType === "azure") {
             const res = await this.svc.azureRequest(
               p.path,
-              p.method,
+              p.method || "get",
               p.body,
               p.queryParams,
               p.apiVersion,
@@ -171,14 +305,14 @@ export class MSGraphMCP {
               p.fetchAll
             );
             return this.formatResponse(
-              `Azure ${p.method.toUpperCase()} ${p.path}`,
+              `Azure ${(p.method || "get").toUpperCase()} ${p.path}`,
               res
             );
           }
 
           const res = await this.svc.genericGraphRequest(
             p.path,
-            p.method,
+            p.method || "get",
             p.body,
             p.queryParams,
             p.graphApiVersion,
@@ -186,7 +320,7 @@ export class MSGraphMCP {
             p.consistencyLevel
           );
           return this.formatResponse(
-            `Graph ${p.method.toUpperCase()} ${p.path}`,
+            `Graph ${(p.method || "get").toUpperCase()} ${p.path}`,
             res
           );
         } catch (e) {
@@ -198,8 +332,9 @@ export class MSGraphMCP {
     );
 
     // 2) Convenience tools
-    server.registerTool(
-      "getCurrentUserProfile",
+    this.registerServerTool(
+      server,
+      "microsoft-graph-profile",
       {
         title: "Get Current User Profile",
         description: "Get the current user's Microsoft Graph profile",
@@ -211,8 +346,9 @@ export class MSGraphMCP {
       }
     );
 
-    server.registerTool(
-      "getUsers",
+    this.registerServerTool(
+      server,
+      "list-users",
       {
         title: "Get Users",
         description: "Get users from Microsoft Graph",
@@ -221,14 +357,16 @@ export class MSGraphMCP {
           fetchAll: z.boolean().optional().default(false),
         },
       },
-      async ({ queryParams, fetchAll }) => {
-        const res = await this.svc.getUsers(queryParams, fetchAll);
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as UserGroupParams;
+        const res = await this.svc.getUsers(params.queryParams, params.fetchAll);
         return this.formatResponse("Users retrieved", res);
       }
     );
 
-    server.registerTool(
-      "getGroups",
+    this.registerServerTool(
+      server,
+      "list-groups",
       {
         title: "Get Groups",
         description: "Get groups from Microsoft Graph",
@@ -237,13 +375,122 @@ export class MSGraphMCP {
           fetchAll: z.boolean().optional().default(false),
         },
       },
-      async ({ queryParams, fetchAll }) => {
-        const res = await this.svc.getGroups(queryParams, fetchAll);
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as UserGroupParams;
+        const res = await this.svc.getGroups(params.queryParams, params.fetchAll);
         return this.formatResponse("Groups retrieved", res);
       }
     );
 
-    server.registerTool(
+    // Add missing tools that are in callTool switch
+    this.registerServerTool(
+      server,
+      "search-users",
+      {
+        title: "Search Users",
+        description: "Search for users in Microsoft Graph",
+        inputSchema: {
+          query: z.string().describe("Search query for users")
+        },
+      },
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as SearchUsersParams;
+        const res = await this.svc.getUsers({ $search: `"displayName:${params.query}"` });
+        return this.formatResponse("User search completed", res);
+      }
+    );
+
+    this.registerServerTool(
+      server,
+      "send-mail",
+      {
+        title: "Send Mail",
+        description: "Send an email via Microsoft Graph",
+        inputSchema: {
+          to: z.string().describe("Recipient email address"),
+          subject: z.string().describe("Email subject"),
+          body: z.string().describe("Email body")
+        },
+      },
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as SendMailParams;
+        const res = await this.svc.genericGraphRequest('/me/sendMail', 'post', {
+          message: {
+            subject: params.subject,
+            body: { contentType: "Text", content: params.body },
+            toRecipients: [{ emailAddress: { address: params.to } }]
+          }
+        });
+        return this.formatResponse("Email sent", res);
+      }
+    );
+
+    this.registerServerTool(
+      server,
+      "list-calendar-events",
+      {
+        title: "List Calendar Events",
+        description: "List calendar events for the current user",
+        inputSchema: {
+          startDateTime: z.string().optional().describe("Start date-time filter"),
+          endDateTime: z.string().optional().describe("End date-time filter")
+        },
+      },
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as ListCalendarEventsParams;
+        const queryParams: Record<string, string> = {};
+        if (params.startDateTime) queryParams.$filter = `start/dateTime ge '${params.startDateTime}'`;
+        if (params.endDateTime) {
+          const filter = queryParams.$filter ? `${queryParams.$filter} and end/dateTime le '${params.endDateTime}'` : `end/dateTime le '${params.endDateTime}'`;
+          queryParams.$filter = filter;
+        }
+        queryParams.$orderby = "start/dateTime";
+        queryParams.$top = "50";
+        
+        const res = await this.svc.genericGraphRequest('/me/events', 'get', undefined, queryParams);
+        return this.formatResponse("Upcoming events retrieved", res);
+      }
+    );
+
+    this.registerServerTool(
+      server,
+      "create-calendar-event",
+      {
+        title: "Create Calendar Event",
+        description: "Create a new calendar event",
+        inputSchema: {
+          subject: z.string().describe("Event subject"),
+          start: z.string().describe("Start time in ISO format"),
+          end: z.string().describe("End time in ISO format"),
+          attendees: z.array(z.string()).optional().describe("Attendee email addresses"),
+          body: z.string().optional().describe("Event body"),
+          location: z.string().optional().describe("Event location")
+        },
+      },
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as CreateCalendarEventParams;
+        const event: Record<string, unknown> = {
+          subject: params.subject,
+          start: { dateTime: params.start, timeZone: "UTC" },
+          end: { dateTime: params.end, timeZone: "UTC" }
+        };
+        
+        if (params.body) event.body = { contentType: "HTML", content: params.body };
+        if (params.location) event.location = { displayName: params.location };
+        if (params.attendees) {
+          event.attendees = params.attendees.map((email: string) => ({
+            emailAddress: { address: email },
+            type: "required"
+          }));
+        }
+        
+        const res = await this.svc.genericGraphRequest('/me/events', 'post', event);
+        return this.formatResponse("Calendar event created", res);
+      }
+    );
+
+    this.registerServerTool(
+      server,
       "getApplications",
       {
         title: "Get Applications",
@@ -253,14 +500,16 @@ export class MSGraphMCP {
           fetchAll: z.boolean().optional().default(false),
         },
       },
-      async ({ queryParams, fetchAll }) => {
-        const res = await this.svc.getApplications(queryParams, fetchAll);
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as UserGroupParams;
+        const res = await this.svc.getApplications(params.queryParams, params.fetchAll);
         return this.formatResponse("Applications retrieved", res);
       }
     );
 
     // 3) Outlook draft
-    server.registerTool(
+    this.registerServerTool(
+      server,
       "createDraftEmail",
       {
         title: "Create Draft Email",
@@ -274,25 +523,19 @@ export class MSGraphMCP {
           bccRecipients: z.array(z.string()).optional(),
         },
       },
-      async ({
-        subject,
-        body,
-        contentType,
-        toRecipients,
-        ccRecipients,
-        bccRecipients,
-      }) => {
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as DraftEmailParams;
         try {
           const msg = {
-            subject: subject ?? "",
-            body: { contentType: contentType ?? "Text", content: body ?? "" },
-            toRecipients: (toRecipients ?? []).map((a) => ({
+            subject: params.subject ?? "",
+            body: { contentType: params.contentType ?? "Text", content: params.body ?? "" },
+            toRecipients: (params.toRecipients ?? []).map((a: string) => ({
               emailAddress: { address: a },
             })),
-            ccRecipients: (ccRecipients ?? []).map((a) => ({
+            ccRecipients: (params.ccRecipients ?? []).map((a: string) => ({
               emailAddress: { address: a },
             })),
-            bccRecipients: (bccRecipients ?? []).map((a) => ({
+            bccRecipients: (params.bccRecipients ?? []).map((a: string) => ({
               emailAddress: { address: a },
             })),
           };
@@ -304,14 +547,15 @@ export class MSGraphMCP {
           return this.formatResponse("Draft created", res);
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          logger.error("createDraftEmail error", { msg, subject, contentType });
+          logger.error("createDraftEmail error", { msg, subject: params.subject, contentType: params.contentType });
           throw new Error(msg);
         }
       }
     );
 
     // 4) Calendar helpers
-    server.registerTool(
+    this.registerServerTool(
+      server,
       "getUpcomingEvents",
       {
         title: "Get Upcoming Events",
@@ -331,13 +575,14 @@ export class MSGraphMCP {
             ),
         },
       },
-      async ({ numberOfEvents, startDateTime }) => {
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as UpcomingEventsParams;
         try {
           const queryParams = {
-            $top: String(numberOfEvents),
+            $top: String(params.numberOfEvents ?? 10),
             $orderby: "start/dateTime",
             $filter: `start/dateTime ge '${
-              startDateTime || new Date().toISOString()
+              params.startDateTime || new Date().toISOString()
             }'`,
           } as Record<string, string>;
           const res = await this.svc.genericGraphRequest(
@@ -353,15 +598,16 @@ export class MSGraphMCP {
           const msg = e instanceof Error ? e.message : String(e);
           logger.error("getUpcomingEvents tool error", {
             msg,
-            numberOfEvents,
-            startDateTime,
+            numberOfEvents: params.numberOfEvents,
+            startDateTime: params.startDateTime,
           });
           throw new Error(msg);
         }
       }
     );
 
-    server.registerTool(
+    this.registerServerTool(
+      server,
       "createCalendarEvent",
       {
         title: "Create Calendar Event",
@@ -389,7 +635,8 @@ export class MSGraphMCP {
             .describe("Whether it's an online meeting (e.g., Teams)"),
         },
       },
-      async (p) => {
+      async (args: Record<string, unknown>) => {
+        const p = args as unknown as CalendarEventParams;
         try {
           const event = {
             subject: p.subject,
@@ -397,7 +644,7 @@ export class MSGraphMCP {
             end: { dateTime: p.endTime, timeZone: "UTC" },
             body: { contentType: "Text", content: p.body || "" },
             location: { displayName: p.location || "" },
-            attendees: p.attendees.map((email) => ({
+            attendees: p.attendees.map((email: string) => ({
               emailAddress: { address: email },
               type: "required",
             })),
@@ -418,7 +665,8 @@ export class MSGraphMCP {
     );
 
     // Search Files tool - Microsoft Graph Search API for files
-    server.registerTool(
+    this.registerServerTool(
+      server,
       "search-files",
       {
         title: "Search Files",
@@ -466,7 +714,8 @@ export class MSGraphMCP {
             .describe("Sort order: 'asc' or 'desc'")
         }
       },
-      async (params) => {
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as SearchFilesParams;
         try {
           logger.info("Search files tool called", { params });
 
@@ -491,7 +740,7 @@ export class MSGraphMCP {
                 }),
                 ...(params.fileTypes && params.fileTypes.length > 0 && {
                   query: {
-                    queryString: `${params.query} AND (${params.fileTypes.map(type => `filetype:${type}`).join(" OR ")})`
+                    queryString: `${params.query} AND (${params.fileTypes.map((type: string) => `filetype:${type}`).join(" OR ")})`
                   }
                 })
               }
@@ -508,19 +757,29 @@ export class MSGraphMCP {
           // Format the results for better readability
           const formattedResults = {
             totalResults: searchResults.value?.[0]?.hitsContainers?.[0]?.total || 0,
-            results: searchResults.value?.[0]?.hitsContainers?.[0]?.hits?.map((hit: any) => ({
-              name: hit.resource?.name || "Unknown",
-              webUrl: hit.resource?.webUrl || "",
-              lastModified: hit.resource?.lastModifiedDateTime || "",
-              size: hit.resource?.size || 0,
-              fileType: hit.resource?.file?.mimeType || "",
-              summary: hit.summary || "",
-              path: hit.resource?.parentReference?.path || "",
-              createdBy: hit.resource?.createdBy?.user?.displayName || "",
-              modifiedBy: hit.resource?.lastModifiedBy?.user?.displayName || "",
-              downloadUrl: hit.resource?.["@microsoft.graph.downloadUrl"] || "",
-              score: hit.score || 0
-            })) || []
+            results: searchResults.value?.[0]?.hitsContainers?.[0]?.hits?.map((hit: Record<string, unknown>) => {
+              const resource = hit.resource as Record<string, unknown>;
+              const file = resource?.file as Record<string, unknown>;
+              const parentRef = resource?.parentReference as Record<string, unknown>;
+              const createdBy = resource?.createdBy as Record<string, unknown>;
+              const lastModifiedBy = resource?.lastModifiedBy as Record<string, unknown>;
+              const createdByUser = createdBy?.user as Record<string, unknown>;
+              const lastModifiedByUser = lastModifiedBy?.user as Record<string, unknown>;
+              
+              return {
+                name: resource?.name as string || "Unknown",
+                webUrl: resource?.webUrl as string || "",
+                lastModified: resource?.lastModifiedDateTime as string || "",
+                size: resource?.size as number || 0,
+                fileType: file?.mimeType as string || "",
+                summary: hit.summary as string || "",
+                path: parentRef?.path as string || "",
+                createdBy: createdByUser?.displayName as string || "",
+                modifiedBy: lastModifiedByUser?.displayName as string || "",
+                downloadUrl: (resource as Record<string, unknown>)?.["@microsoft.graph.downloadUrl"] as string || "",
+                score: hit.score as number || 0
+              };
+            }) || []
           };
 
           return this.formatResponse(
@@ -537,7 +796,8 @@ export class MSGraphMCP {
     );
 
     // Get Schedule tool - Microsoft Graph Calendar getSchedule API
-    server.registerTool(
+    this.registerServerTool(
+      server,
       "get-schedule",
       {
         title: "Get Schedule",
@@ -563,7 +823,8 @@ export class MSGraphMCP {
             .describe("Interval in minutes for availability view (5-1440, default: 30). Represents the granularity of free/busy time.")
         }
       },
-      async (params) => {
+      async (args: Record<string, unknown>) => {
+        const params = args as unknown as GetScheduleParams;
         try {
           logger.info("Get schedule tool called", { params });
 
@@ -613,22 +874,31 @@ export class MSGraphMCP {
               endTime: params.endTime,
               intervalMinutes: params.availabilityViewInterval || 30
             },
-            schedules: scheduleData.value?.map((schedule: any, index: number) => ({
-              email: params.schedules[index],
-              availabilityView: schedule.availabilityView || [],
-              busyTimes: schedule.busyTimes?.map((busyTime: any) => ({
-                start: busyTime.start?.dateTime || "",
-                end: busyTime.end?.dateTime || "",
-                status: busyTime.status || "busy"
-              })) || [],
-              workingHours: schedule.workingHours ? {
-                daysOfWeek: schedule.workingHours.daysOfWeek || [],
-                startTime: schedule.workingHours.startTime || "",
-                endTime: schedule.workingHours.endTime || "",
-                timeZone: schedule.workingHours.timeZone?.name || "UTC"
-              } : null,
-              freeBusyStatus: this.getFreeBusyInterpretation(schedule.availabilityView || [])
-            })) || []
+            schedules: scheduleData.value?.map((schedule: Record<string, unknown>, index: number) => {
+              const workingHours = schedule.workingHours as Record<string, unknown>;
+              const timeZone = workingHours?.timeZone as Record<string, unknown>;
+              
+              return {
+                email: params.schedules[index],
+                availabilityView: schedule.availabilityView as string[] || [],
+                busyTimes: (schedule.busyTimes as Record<string, unknown>[])?.map((busyTime: Record<string, unknown>) => {
+                  const start = busyTime.start as Record<string, unknown>;
+                  const end = busyTime.end as Record<string, unknown>;
+                  return {
+                    start: start?.dateTime as string || "",
+                    end: end?.dateTime as string || "",
+                    status: busyTime.status as string || "busy"
+                  };
+                }) || [],
+                workingHours: workingHours ? {
+                  daysOfWeek: workingHours.daysOfWeek as string[] || [],
+                  startTime: workingHours.startTime as string || "",
+                  endTime: workingHours.endTime as string || "",
+                  timeZone: timeZone?.name as string || "UTC"
+                } : null,
+                freeBusyStatus: this.getFreeBusyInterpretation(schedule.availabilityView as string[] || [])
+              };
+            }) || []
           };
 
           return this.formatResponse(
@@ -640,6 +910,45 @@ export class MSGraphMCP {
           const msg = e instanceof Error ? e.message : String(e);
           logger.error("Get schedule tool error", { msg, params });
           throw new Error(`Failed to get schedule: ${msg}`);
+        }
+      }
+    );
+
+    // Throttling Statistics tool - Monitor API throttling and performance
+    this.registerServerTool(
+      server,
+      "throttling-stats",
+      {
+        title: "Throttling Statistics",
+        description: "Get current throttling statistics and API performance metrics for Microsoft Graph requests.",
+        inputSchema: {}
+      },
+      async () => {
+        try {
+          logger.info("Throttling stats tool called");
+          
+          // Import throttling manager to get current stats
+          const { throttlingManager } = await import('./lib/throttling-manager.js');
+          const stats = throttlingManager.getStats();
+          
+          const enhancedStats = {
+            ...stats,
+            timestamp: new Date().toISOString(),
+            windowSize: "10 minutes",
+            description: {
+              totalRequests: "Total requests since server start",
+              recentRequests: "Requests in the last 10 minutes",
+              errorRate: "Percentage of failed requests (0.0 to 1.0)",
+              throttledRequests: "Number of 429 (throttled) responses"
+            }
+          };
+
+          return this.formatResponse("Throttling statistics retrieved", enhancedStats);
+
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          logger.error("Throttling stats tool error", { msg });
+          throw new Error(`Failed to get throttling stats: ${msg}`);
         }
       }
     );
