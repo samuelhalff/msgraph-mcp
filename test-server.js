@@ -174,7 +174,6 @@ class TestRunner {
       const duration = r.duration ? ` (${r.duration}ms)` : '';
       console.log(`${status} ${r.name}${duration}`);
     });
-
     return this.failed === 0;
   }
 }

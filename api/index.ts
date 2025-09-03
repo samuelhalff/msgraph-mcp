@@ -516,17 +516,15 @@ app.post("/mcp", async (c) => {
           // Access server to ensure it's initialized
           void mcp.server;
           
-          // Call the tool through the MCP server (proper MCP protocol)
+          // Call the tool through our direct tool handler
           logger.info("MCP endpoint - tool call requested", {
             toolName: request.params.name,
             arguments: request.params.arguments
           });
           
-          // Use the server's internal tool handling mechanism
           try {
-            // The server should handle this, but since we're using HTTP transport
-            // we need to call the tool handler directly
-            throw new Error("Direct tool calling removed - use proper MCP client to connect to this server");
+            // Call the tool directly using our stored handlers
+            result = await mcp.callTool(request.params.name, request.params.arguments || {});
           } catch (error) {
             logger.error("Tool call failed", { error: error instanceof Error ? error.message : String(error) });
             throw error;
