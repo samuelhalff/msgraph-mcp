@@ -2,6 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { MSGraphService } from "./MSGraphService.js";
 import { Env, MSGraphAuthContext } from "../types.js";
 import logger from "./lib/logger.js";
+import { throttlingManager } from "./lib/throttling-manager.js";
+import { z, ZodObject, ZodTypeAny } from "zod";
 
 // Tool parameter interfaces
 interface GraphApiParams {
@@ -178,21 +180,43 @@ export class MSGraphMCP {
   }
 
   // Track tools as they're registered with the server
-  private toolRegistry = new Map<string, string>();
+  private toolRegistry = new Map<string, { name: string; description: string; inputSchema: ZodTypeAny }>();
+  private toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ type: "text", text: string }> }> | { content: Array<{ type: "text", text: string }> }>();
 
   /** Register a tool with tracking */
   private registerServerTool(
     server: McpServer, 
     name: string, 
-    schema: object, 
+    schema: { title?: string; description?: string; inputSchema: ZodTypeAny }, 
     handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: "text", text: string }> }> | { content: Array<{ type: "text", text: string }> }
   ) {
-    // Track the tool - safe type casting for known schema structure
-    const schemaWithDescription = schema as { description?: string; title?: string };
-    this.toolRegistry.set(name, schemaWithDescription.description || schemaWithDescription.title || `Microsoft Graph tool: ${name}`);
+    // Track the tool with full schema information for HTTP transport
+    this.toolRegistry.set(name, {
+      name,
+      description: schema.description || schema.title || `Microsoft Graph tool: ${name}`,
+      inputSchema: schema.inputSchema
+    });
     
-    // Register with the server
-    server.registerTool(name, schema, handler);
+    // Store the handler for direct tool calls
+    this.toolHandlers.set(name, handler);
+    
+    // Register with the server using proper MCP format
+    // MCP SDK expects the full schema object but with inputSchema as ZodRawShape
+    const mcpSchema = {
+      title: schema.title,
+      description: schema.description,
+      inputSchema: schema.inputSchema._def?.shape || (schema.inputSchema as ZodObject<Record<string, ZodTypeAny>>).shape || {}
+    };
+    server.registerTool(name, mcpSchema, handler);
+  }
+
+  /** Call a tool directly by name */
+  async callTool(name: string, args: Record<string, unknown>) {
+    const handler = this.toolHandlers.get(name);
+    if (!handler) {
+      throw new Error(`Tool '${name}' not found`);
+    }
+    return await handler(args);
   }
 
   /** Get list of available tools from our registry */
@@ -204,10 +228,31 @@ export class MSGraphMCP {
       // Server is now created and tools are registered
     }
     
-    return Array.from(this.toolRegistry.entries()).map(([name, description]) => ({
-      name,
-      description
-    }));
+    return Array.from(this.toolRegistry.values());
+  }
+
+  /** Get detailed tool information for debugging */
+  getToolsDebugInfo() {
+    // Ensure registry is populated
+    if (this.toolRegistry.size === 0) {
+      void this.server;
+    }
+    
+    return {
+      totalTools: this.toolRegistry.size,
+      toolNames: Array.from(this.toolRegistry.keys()),
+      tools: Array.from(this.toolRegistry.values()).map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        hasInputSchema: !!tool.inputSchema,
+        inputSchemaType: tool.inputSchema?.constructor?.name || typeof tool.inputSchema,
+        schemaKeys: tool.inputSchema && typeof tool.inputSchema === 'object' && 'shape' in tool.inputSchema 
+          ? Object.keys((tool.inputSchema as ZodObject<Record<string, ZodTypeAny>>)._def.shape || {})
+          : []
+      })),
+      hasHandlers: this.toolHandlers.size,
+      handlerNames: Array.from(this.toolHandlers.keys())
+    };
   }
 
   /** Check if a tool exists */
@@ -236,60 +281,60 @@ export class MSGraphMCP {
       {
         title: "Microsoft Graph API",
         description: "Versatile Graph / ARM request helper.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            apiType: {
-              type: "string",
-              enum: ["graph", "azure"],
-              default: "graph",
-              description: "Type of Microsoft API to query. Options: 'graph' for Microsoft Graph (Entra) or 'azure' for Azure Resource Management. Defaults to 'graph'."
-            },
-            path: {
-              type: "string",
-              description: "The Azure or Graph API URL path to call (e.g. '/users', '/groups', '/subscriptions')"
-            },
-            method: {
-              type: "string",
-              enum: ["get", "post", "put", "patch", "delete"],
-              description: "HTTP method to use"
-            },
-            apiVersion: {
-              type: "string",
-              description: "Azure Resource Management API version (required for apiType Azure)"
-            },
-            subscriptionId: {
-              type: "string",
-              description: "Azure Subscription ID (for Azure Resource Management)."
-            },
-            queryParams: {
-              type: "object",
-              additionalProperties: { type: "string" },
-              description: "Query parameters for the request"
-            },
-            body: {
-              type: "object",
-              description: "The request body (for POST, PUT, PATCH)"
-            },
-            graphApiVersion: {
-              type: "string",
-              enum: ["v1.0", "beta"],
-              default: "v1.0",
-              description: "Microsoft Graph API version to use (default: v1.0)"
-            },
-            fetchAll: {
-              type: "boolean",
-              default: false,
-              description: "Set to true to automatically fetch all pages for list results (e.g., users, groups). Default is false."
-            },
-            consistencyLevel: {
-              type: "string",
-              description: "Graph API ConsistencyLevel header. Advised to be set to 'eventual' for Graph GET requests using advanced OData queries."
-            }
-          },
-          required: ["path"],
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          apiType: z
+            .enum(["graph", "azure"])
+            .optional()
+            .default("graph")
+            .describe(
+              "Type of Microsoft API to query. Options: 'graph' for Microsoft Graph (Entra) or 'azure' for Azure Resource Management. Defaults to 'graph'."
+            ),
+          path: z
+            .string()
+            .describe(
+              "The Azure or Graph API URL path to call (e.g. '/users', '/groups', '/subscriptions')"
+            ),
+          method: z
+            .enum(["get", "post", "put", "patch", "delete"])
+            .optional()
+            .describe("HTTP method to use"),
+          apiVersion: z
+            .string()
+            .optional()
+            .describe(
+              "Azure Resource Management API version (required for apiType Azure)"
+            ),
+          subscriptionId: z
+            .string()
+            .optional()
+            .describe("Azure Subscription ID (for Azure Resource Management)."),
+          queryParams: z
+            .record(z.string())
+            .optional()
+            .describe("Query parameters for the request"),
+          body: z
+            .record(z.string(), z.any())
+            .optional()
+            .describe("The request body (for POST, PUT, PATCH)"),
+          graphApiVersion: z
+            .enum(["v1.0", "beta"])
+            .optional()
+            .default("v1.0")
+            .describe("Microsoft Graph API version to use (default: v1.0)"),
+          fetchAll: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe(
+              "Set to true to automatically fetch all pages for list results (e.g., users, groups). Default is false."
+            ),
+          consistencyLevel: z
+            .string()
+            .optional()
+            .describe(
+              "Graph API ConsistencyLevel header. Advised to be set to 'eventual' for Graph GET requests using advanced OData queries."
+            ),
+        }),
       },
       async (args: Record<string, unknown>) => {
         const p = args as unknown as GraphApiParams;
@@ -338,11 +383,7 @@ export class MSGraphMCP {
       {
         title: "Get Current User Profile",
         description: "Get the current user's Microsoft Graph profile",
-        inputSchema: {
-          type: "object",
-          properties: {},
-          additionalProperties: false
-        },
+        inputSchema: z.object({}),
       },
       async () => {
         const res = await this.svc.getCurrentUserProfile();
@@ -356,22 +397,10 @@ export class MSGraphMCP {
       {
         title: "Get Users",
         description: "Get users from Microsoft Graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            queryParams: {
-              type: "object",
-              additionalProperties: { type: "string" },
-              description: "Query parameters for the request"
-            },
-            fetchAll: {
-              type: "boolean",
-              default: false,
-              description: "Fetch all pages of results"
-            }
-          },
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          queryParams: z.record(z.string()).optional().describe("Query parameters for the request"),
+          fetchAll: z.boolean().optional().default(false).describe("Fetch all pages of results")
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as UserGroupParams;
@@ -386,22 +415,10 @@ export class MSGraphMCP {
       {
         title: "Get Groups",
         description: "Get groups from Microsoft Graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            queryParams: {
-              type: "object",
-              additionalProperties: { type: "string" },
-              description: "Query parameters for the request"
-            },
-            fetchAll: {
-              type: "boolean",
-              default: false,
-              description: "Fetch all pages of results"
-            }
-          },
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          queryParams: z.record(z.string()).optional().describe("Query parameters for the request"),
+          fetchAll: z.boolean().optional().default(false).describe("Fetch all pages of results")
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as UserGroupParams;
@@ -417,17 +434,9 @@ export class MSGraphMCP {
       {
         title: "Search Users",
         description: "Search for users in Microsoft Graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "Search query for users"
-            }
-          },
-          required: ["query"],
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          query: z.string().describe("Search query for users")
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as SearchUsersParams;
@@ -442,25 +451,11 @@ export class MSGraphMCP {
       {
         title: "Send Mail",
         description: "Send an email via Microsoft Graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            to: {
-              type: "string",
-              description: "Recipient email address"
-            },
-            subject: {
-              type: "string", 
-              description: "Email subject"
-            },
-            body: {
-              type: "string",
-              description: "Email body"
-            }
-          },
-          required: ["to", "subject", "body"],
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          to: z.string().describe("Recipient email address"),
+          subject: z.string().describe("Email subject"),
+          body: z.string().describe("Email body")
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as SendMailParams;
@@ -481,20 +476,10 @@ export class MSGraphMCP {
       {
         title: "List Calendar Events",
         description: "List calendar events for the current user",
-        inputSchema: {
-          type: "object",
-          properties: {
-            startDateTime: {
-              type: "string",
-              description: "Start date-time filter"
-            },
-            endDateTime: {
-              type: "string", 
-              description: "End date-time filter"
-            }
-          },
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          startDateTime: z.string().optional().describe("Start date-time filter"),
+          endDateTime: z.string().optional().describe("End date-time filter")
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as ListCalendarEventsParams;
@@ -518,38 +503,14 @@ export class MSGraphMCP {
       {
         title: "Create Calendar Event",
         description: "Create a new calendar event",
-        inputSchema: {
-          type: "object",
-          properties: {
-            subject: {
-              type: "string",
-              description: "Event subject"
-            },
-            start: {
-              type: "string",
-              description: "Start time in ISO format"
-            },
-            end: {
-              type: "string",
-              description: "End time in ISO format"
-            },
-            attendees: {
-              type: "array",
-              items: { type: "string" },
-              description: "Attendee email addresses"
-            },
-            body: {
-              type: "string",
-              description: "Event body"
-            },
-            location: {
-              type: "string",
-              description: "Event location"
-            }
-          },
-          required: ["subject", "start", "end"],
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          subject: z.string().describe("Event subject"),
+          start: z.string().describe("Start time in ISO format"),
+          end: z.string().describe("End time in ISO format"),
+          attendees: z.array(z.string()).optional().describe("Attendee email addresses"),
+          body: z.string().optional().describe("Event body"),
+          location: z.string().optional().describe("Event location")
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as CreateCalendarEventParams;
@@ -579,22 +540,10 @@ export class MSGraphMCP {
       {
         title: "Get Applications",
         description: "Get applications from Microsoft Graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            queryParams: {
-              type: "object",
-              additionalProperties: { type: "string" },
-              description: "Query parameters for the request"
-            },
-            fetchAll: {
-              type: "boolean",
-              default: false,
-              description: "Whether to fetch all pages of results"
-            }
-          },
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          queryParams: z.record(z.string()).optional(),
+          fetchAll: z.boolean().optional().default(false),
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as UserGroupParams;
@@ -610,41 +559,14 @@ export class MSGraphMCP {
       {
         title: "Create Draft Email",
         description: "Create an Outlook draft (saved to Drafts)",
-        inputSchema: {
-          type: "object",
-          properties: {
-            subject: {
-              type: "string",
-              description: "Email subject"
-            },
-            body: {
-              type: "string",
-              description: "Email body content"
-            },
-            contentType: {
-              type: "string",
-              enum: ["Text", "HTML"],
-              default: "Text",
-              description: "Content type for the email body"
-            },
-            toRecipients: {
-              type: "array",
-              items: { type: "string" },
-              description: "Array of recipient email addresses"
-            },
-            ccRecipients: {
-              type: "array",
-              items: { type: "string" },
-              description: "Array of CC recipient email addresses"
-            },
-            bccRecipients: {
-              type: "array",
-              items: { type: "string" },
-              description: "Array of BCC recipient email addresses"
-            }
-          },
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          subject: z.string().optional(),
+          body: z.string().optional(),
+          contentType: z.enum(["Text", "HTML"]).optional().default("Text"),
+          toRecipients: z.array(z.string()).optional(),
+          ccRecipients: z.array(z.string()).optional(),
+          bccRecipients: z.array(z.string()).optional(),
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as DraftEmailParams;
@@ -684,21 +606,19 @@ export class MSGraphMCP {
         title: "Get Upcoming Events",
         description:
           "Get upcoming calendar events for the current user from Microsoft Graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            numberOfEvents: {
-              type: "number",
-              default: 10,
-              description: "Number of events to retrieve. Default: 10"
-            },
-            startDateTime: {
-              type: "string",
-              description: "Start date-time in ISO format to filter events from. Default: current time"
-            }
-          },
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          numberOfEvents: z
+            .number()
+            .optional()
+            .default(10)
+            .describe("Number of events to retrieve. Default: 10"),
+          startDateTime: z
+            .string()
+            .optional()
+            .describe(
+              "Start date-time in ISO format to filter events from. Default: current time"
+            ),
+        }),
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as UpcomingEventsParams;
@@ -738,43 +658,27 @@ export class MSGraphMCP {
         title: "Create Calendar Event",
         description:
           "Create a calendar event (meeting) with other people in Microsoft Graph",
-        inputSchema: {
-          type: "object",
-          properties: {
-            subject: {
-              type: "string",
-              description: "Subject of the event"
-            },
-            startTime: {
-              type: "string",
-              description: "Start time in ISO format (e.g., '2025-09-02T10:00:00Z')"
-            },
-            endTime: {
-              type: "string",
-              description: "End time in ISO format (e.g., '2025-09-02T11:00:00Z')"
-            },
-            attendees: {
-              type: "array",
-              items: { type: "string" },
-              description: "Array of email addresses of attendees"
-            },
-            body: {
-              type: "string",
-              description: "Body content of the event"
-            },
-            location: {
-              type: "string",
-              description: "Location of the event"
-            },
-            isOnlineMeeting: {
-              type: "boolean",
-              default: false,
-              description: "Whether it's an online meeting (e.g., Teams)"
-            }
-          },
-          required: ["subject", "startTime", "endTime", "attendees"],
-          additionalProperties: false
-        },
+        inputSchema: z.object({
+          subject: z.string().describe("Subject of the event"),
+          startTime: z
+            .string()
+            .describe(
+              "Start time in ISO format (e.g., '2025-09-02T10:00:00Z')"
+            ),
+          endTime: z
+            .string()
+            .describe("End time in ISO format (e.g., '2025-09-02T11:00:00Z')"),
+          attendees: z
+            .array(z.string())
+            .describe("Array of email addresses of attendees"),
+          body: z.string().optional().describe("Body content of the event"),
+          location: z.string().optional().describe("Location of the event"),
+          isOnlineMeeting: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe("Whether it's an online meeting (e.g., Teams)"),
+        }),
       },
       async (args: Record<string, unknown>) => {
         const p = args as unknown as CalendarEventParams;
@@ -812,62 +716,48 @@ export class MSGraphMCP {
       {
         title: "Search Files",
         description: "Search for files across OneDrive, SharePoint, and Teams using Microsoft Graph Search API.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "Search query for files (e.g., 'quarterly report', 'meeting notes', or 'filename:document.pdf')"
-            },
-            entityTypes: {
-              type: "array",
-              items: {
-                type: "string",
-                enum: ["driveItem"]
-              },
-              default: ["driveItem"],
-              description: "Entity types to search. For files, use 'driveItem'"
-            },
-            size: {
-              type: "number",
-              minimum: 1,
-              maximum: 1000,
-              default: 25,
-              description: "Number of results to return (1-1000, default: 25)"
-            },
-            from: {
-              type: "number",
-              minimum: 0,
-              default: 0,
-              description: "Starting point for results (for pagination, default: 0)"
-            },
-            fileTypes: {
-              type: "array",
-              items: { type: "string" },
-              description: "Filter by file types (e.g., ['pdf', 'docx', 'xlsx'])"
-            },
-            contentSource: {
-              type: "string",
-              enum: ["default", "sharepoint", "onedrive"],
-              default: "default",
-              description: "Content source to search: 'default' (all), 'sharepoint', or 'onedrive'"
-            },
-            sortBy: {
-              type: "string",
-              enum: ["relevance", "lastModifiedDateTime", "name", "size"],
-              default: "relevance",
-              description: "Sort results by: 'relevance', 'lastModifiedDateTime', 'name', or 'size'"
-            },
-            sortOrder: {
-              type: "string",
-              enum: ["asc", "desc"],
-              default: "desc",
-              description: "Sort order: 'asc' or 'desc'"
-            }
-          },
-          required: ["query"],
-          additionalProperties: false
-        }
+        inputSchema: z.object({
+          query: z
+            .string()
+            .describe("Search query for files (e.g., 'quarterly report', 'meeting notes', or 'filename:document.pdf')"),
+          entityTypes: z
+            .array(z.enum(["driveItem"]))
+            .optional()
+            .default(["driveItem"])
+            .describe("Entity types to search. For files, use 'driveItem'"),
+          size: z
+            .number()
+            .min(1)
+            .max(1000)
+            .optional()
+            .default(25)
+            .describe("Number of results to return (1-1000, default: 25)"),
+          from: z
+            .number()
+            .min(0)
+            .optional()
+            .default(0)
+            .describe("Starting point for results (for pagination, default: 0)"),
+          fileTypes: z
+            .array(z.string())
+            .optional()
+            .describe("Filter by file types (e.g., ['pdf', 'docx', 'xlsx'])"),
+          contentSource: z
+            .enum(["default", "sharepoint", "onedrive"])
+            .optional()
+            .default("default")
+            .describe("Content source to search: 'default' (all), 'sharepoint', or 'onedrive'"),
+          sortBy: z
+            .enum(["relevance", "lastModifiedDateTime", "name", "size"])
+            .optional()
+            .default("relevance")
+            .describe("Sort results by: 'relevance', 'lastModifiedDateTime', 'name', or 'size'"),
+          sortOrder: z
+            .enum(["asc", "desc"])
+            .optional()
+            .default("desc")
+            .describe("Sort order: 'asc' or 'desc'")
+        })
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as SearchFilesParams;
@@ -957,35 +847,26 @@ export class MSGraphMCP {
       {
         title: "Get Schedule",
         description: "Get the free/busy availability information for a collection of users, distributions lists, or resources for a specified time period.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            schedules: {
-              type: "array",
-              items: { type: "string" },
-              minItems: 1,
-              maxItems: 20,
-              description: "Email addresses of users, distribution lists, or resources to get schedule for (max 20)"
-            },
-            startTime: {
-              type: "string",
-              description: "Start time for the schedule query in ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')"
-            },
-            endTime: {
-              type: "string",
-              description: "End time for the schedule query in ISO 8601 format (e.g., '2024-03-15T18:00:00.000Z')"
-            },
-            availabilityViewInterval: {
-              type: "number",
-              minimum: 5,
-              maximum: 1440,
-              default: 30,
-              description: "Interval in minutes for availability view (5-1440, default: 30). Represents the granularity of free/busy time."
-            }
-          },
-          required: ["schedules", "startTime", "endTime"],
-          additionalProperties: false
-        }
+        inputSchema: z.object({
+          schedules: z
+            .array(z.string())
+            .min(1)
+            .max(20)
+            .describe("Email addresses of users, distribution lists, or resources to get schedule for (max 20)"),
+          startTime: z
+            .string()
+            .describe("Start time for the schedule query in ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')"),
+          endTime: z
+            .string()
+            .describe("End time for the schedule query in ISO 8601 format (e.g., '2024-03-15T18:00:00.000Z')"),
+          availabilityViewInterval: z
+            .number()
+            .min(5)
+            .max(1440)
+            .optional()
+            .default(30)
+            .describe("Interval in minutes for availability view (5-1440, default: 30). Represents the granularity of free/busy time.")
+        })
       },
       async (args: Record<string, unknown>) => {
         const params = args as unknown as GetScheduleParams;
@@ -1085,18 +966,13 @@ export class MSGraphMCP {
       {
         title: "Throttling Statistics",
         description: "Get current throttling statistics and API performance metrics for Microsoft Graph requests.",
-        inputSchema: {
-          type: "object",
-          properties: {},
-          additionalProperties: false
-        }
+        inputSchema: z.object({})
       },
       async () => {
         try {
           logger.info("Throttling stats tool called");
           
-          // Import throttling manager to get current stats
-          const { throttlingManager } = await import('./lib/throttling-manager.js');
+          // Get current stats from throttling manager
           const stats = throttlingManager.getStats();
           
           const enhancedStats = {
@@ -1122,6 +998,19 @@ export class MSGraphMCP {
     );
 
     logger.info("McpServer configured");
+    
+    // Log all registered tools for debugging and verification
+    const registeredTools = Array.from(this.toolRegistry.keys());
+    logger.info("Registered MCP tools", { 
+      count: registeredTools.length,
+      tools: registeredTools,
+      details: Array.from(this.toolRegistry.values()).map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        hasInputSchema: !!tool.inputSchema
+      }))
+    });
+    
     return server;
   }
 }
