@@ -56,6 +56,41 @@ export class MSGraphMCP {
     };
   }
 
+  /** Helper to interpret availability view array into human-readable status */
+  private getFreeBusyInterpretation(availabilityView: string[]): string {
+    if (!availabilityView || availabilityView.length === 0) {
+      return "No availability data";
+    }
+
+    const statusCounts = availabilityView.reduce((acc, status) => {
+      acc[status] = (acc[status] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    const total = availabilityView.length;
+    const statusPercentages = Object.entries(statusCounts).map(([status, count]) => ({
+      status: this.getStatusLabel(status),
+      percentage: Math.round((count / total) * 100)
+    }));
+
+    return statusPercentages
+      .sort((a, b) => b.percentage - a.percentage)
+      .map(({ status, percentage }) => `${status}: ${percentage}%`)
+      .join(", ");
+  }
+
+  /** Convert numeric status to human-readable label */
+  private getStatusLabel(status: string): string {
+    switch (status) {
+      case "0": return "Free";
+      case "1": return "Tentative";
+      case "2": return "Busy";
+      case "3": return "Out of Office";
+      case "4": return "Working Elsewhere";
+      default: return `Unknown (${status})`;
+    }
+  }
+
   /** Build and configure the McpServer with all tools */
   get server() {
     const server = new McpServer({
@@ -378,6 +413,233 @@ export class MSGraphMCP {
           const msg = e instanceof Error ? e.message : String(e);
           logger.error("createCalendarEvent tool error", { msg, params: p });
           throw new Error(msg);
+        }
+      }
+    );
+
+    // Search Files tool - Microsoft Graph Search API for files
+    server.registerTool(
+      "search-files",
+      {
+        title: "Search Files",
+        description: "Search for files across OneDrive, SharePoint, and Teams using Microsoft Graph Search API.",
+        inputSchema: {
+          query: z
+            .string()
+            .describe("Search query for files (e.g., 'quarterly report', 'meeting notes', or 'filename:document.pdf')"),
+          entityTypes: z
+            .array(z.enum(["driveItem"]))
+            .optional()
+            .default(["driveItem"])
+            .describe("Entity types to search. For files, use 'driveItem'"),
+          size: z
+            .number()
+            .min(1)
+            .max(1000)
+            .optional()
+            .default(25)
+            .describe("Number of results to return (1-1000, default: 25)"),
+          from: z
+            .number()
+            .min(0)
+            .optional()
+            .default(0)
+            .describe("Starting point for results (for pagination, default: 0)"),
+          fileTypes: z
+            .array(z.string())
+            .optional()
+            .describe("Filter by file types (e.g., ['pdf', 'docx', 'xlsx'])"),
+          contentSource: z
+            .enum(["default", "sharepoint", "onedrive"])
+            .optional()
+            .default("default")
+            .describe("Content source to search: 'default' (all), 'sharepoint', or 'onedrive'"),
+          sortBy: z
+            .enum(["relevance", "lastModifiedDateTime", "name", "size"])
+            .optional()
+            .default("relevance")
+            .describe("Sort results by: 'relevance', 'lastModifiedDateTime', 'name', or 'size'"),
+          sortOrder: z
+            .enum(["asc", "desc"])
+            .optional()
+            .default("desc")
+            .describe("Sort order: 'asc' or 'desc'")
+        }
+      },
+      async (params) => {
+        try {
+          logger.info("Search files tool called", { params });
+
+          // Build the search request according to Microsoft Graph Search API
+          const searchRequest = {
+            requests: [
+              {
+                entityTypes: params.entityTypes || ["driveItem"],
+                query: {
+                  queryString: params.query
+                },
+                from: params.from || 0,
+                size: params.size || 25,
+                sortProperties: [
+                  {
+                    name: params.sortBy || "relevance",
+                    isDescending: (params.sortOrder || "desc") === "desc"
+                  }
+                ],
+                ...(params.contentSource && params.contentSource !== "default" && {
+                  contentSources: [params.contentSource]
+                }),
+                ...(params.fileTypes && params.fileTypes.length > 0 && {
+                  query: {
+                    queryString: `${params.query} AND (${params.fileTypes.map(type => `filetype:${type}`).join(" OR ")})`
+                  }
+                })
+              }
+            ]
+          };
+
+          // Make the search request
+          const searchResults = await this.svc.genericGraphRequest(
+            "/search/query",
+            "post",
+            searchRequest
+          );
+
+          // Format the results for better readability
+          const formattedResults = {
+            totalResults: searchResults.value?.[0]?.hitsContainers?.[0]?.total || 0,
+            results: searchResults.value?.[0]?.hitsContainers?.[0]?.hits?.map((hit: any) => ({
+              name: hit.resource?.name || "Unknown",
+              webUrl: hit.resource?.webUrl || "",
+              lastModified: hit.resource?.lastModifiedDateTime || "",
+              size: hit.resource?.size || 0,
+              fileType: hit.resource?.file?.mimeType || "",
+              summary: hit.summary || "",
+              path: hit.resource?.parentReference?.path || "",
+              createdBy: hit.resource?.createdBy?.user?.displayName || "",
+              modifiedBy: hit.resource?.lastModifiedBy?.user?.displayName || "",
+              downloadUrl: hit.resource?.["@microsoft.graph.downloadUrl"] || "",
+              score: hit.score || 0
+            })) || []
+          };
+
+          return this.formatResponse(
+            `Found ${formattedResults.totalResults} files matching "${params.query}"`,
+            formattedResults
+          );
+
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          logger.error("Search files tool error", { msg, params });
+          throw new Error(`Failed to search files: ${msg}`);
+        }
+      }
+    );
+
+    // Get Schedule tool - Microsoft Graph Calendar getSchedule API
+    server.registerTool(
+      "get-schedule",
+      {
+        title: "Get Schedule",
+        description: "Get the free/busy availability information for a collection of users, distributions lists, or resources for a specified time period.",
+        inputSchema: {
+          schedules: z
+            .array(z.string())
+            .min(1)
+            .max(20)
+            .describe("Email addresses of users, distribution lists, or resources to get schedule for (max 20)"),
+          startTime: z
+            .string()
+            .describe("Start time for the schedule query in ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')"),
+          endTime: z
+            .string()
+            .describe("End time for the schedule query in ISO 8601 format (e.g., '2024-03-15T18:00:00.000Z')"),
+          availabilityViewInterval: z
+            .number()
+            .min(5)
+            .max(1440)
+            .optional()
+            .default(30)
+            .describe("Interval in minutes for availability view (5-1440, default: 30). Represents the granularity of free/busy time.")
+        }
+      },
+      async (params) => {
+        try {
+          logger.info("Get schedule tool called", { params });
+
+          // Validate date format and order
+          const startDate = new Date(params.startTime);
+          const endDate = new Date(params.endTime);
+          
+          if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+            throw new Error("Invalid date format. Use ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')");
+          }
+          
+          if (startDate >= endDate) {
+            throw new Error("Start time must be before end time");
+          }
+
+          // Check if time range is reasonable (not more than 62 days as per API limits)
+          const daysDiff = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+          if (daysDiff > 62) {
+            throw new Error("Time range cannot exceed 62 days");
+          }
+
+          // Build the request body according to Microsoft Graph API
+          const requestBody = {
+            schedules: params.schedules,
+            startTime: {
+              dateTime: params.startTime,
+              timeZone: "UTC"
+            },
+            endTime: {
+              dateTime: params.endTime,
+              timeZone: "UTC"
+            },
+            availabilityViewInterval: params.availabilityViewInterval || 30
+          };
+
+          // Make the request to Microsoft Graph
+          const scheduleData = await this.svc.genericGraphRequest(
+            "/me/calendar/getSchedule",
+            "post",
+            requestBody
+          );
+
+          // Format the response for better readability
+          const formattedSchedule = {
+            queryPeriod: {
+              startTime: params.startTime,
+              endTime: params.endTime,
+              intervalMinutes: params.availabilityViewInterval || 30
+            },
+            schedules: scheduleData.value?.map((schedule: any, index: number) => ({
+              email: params.schedules[index],
+              availabilityView: schedule.availabilityView || [],
+              busyTimes: schedule.busyTimes?.map((busyTime: any) => ({
+                start: busyTime.start?.dateTime || "",
+                end: busyTime.end?.dateTime || "",
+                status: busyTime.status || "busy"
+              })) || [],
+              workingHours: schedule.workingHours ? {
+                daysOfWeek: schedule.workingHours.daysOfWeek || [],
+                startTime: schedule.workingHours.startTime || "",
+                endTime: schedule.workingHours.endTime || "",
+                timeZone: schedule.workingHours.timeZone?.name || "UTC"
+              } : null,
+              freeBusyStatus: this.getFreeBusyInterpretation(schedule.availabilityView || [])
+            })) || []
+          };
+
+          return this.formatResponse(
+            `Retrieved schedule information for ${params.schedules.length} recipient(s) from ${params.startTime} to ${params.endTime}`,
+            formattedSchedule
+          );
+
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          logger.error("Get schedule tool error", { msg, params });
+          throw new Error(`Failed to get schedule: ${msg}`);
         }
       }
     );
