@@ -4,6 +4,7 @@ import { Env, MSGraphAuthContext } from "../types.js";
 import logger from "./lib/logger.js";
 import { throttlingManager } from "./lib/throttling-manager.js";
 import { z, ZodObject, ZodTypeAny } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 
 // Tool parameter interfaces
 interface GraphApiParams {
@@ -221,15 +222,17 @@ export class MSGraphMCP {
 
   /** Get list of available tools from our registry */
   getAvailableTools() {
-    // If no tools registered yet, build the server to populate the registry
-    if (this.toolRegistry.size === 0) {
-      // Access server getter to trigger tool registration
-      void this.server;
-      // Server is now created and tools are registered
-    }
-    
-    return Array.from(this.toolRegistry.values());
+  // If no tools registered yet, build the server to populate the registry
+  if (this.toolRegistry.size === 0) {
+    void this.server; // Trigger tool registration
   }
+
+  return Array.from(this.toolRegistry.values()).map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    inputSchema: zodToJsonSchema(tool.inputSchema), // Convert Zod schema to JSON Schema
+  }));
+}
 
   /** Get detailed tool information for debugging */
   getToolsDebugInfo() {
