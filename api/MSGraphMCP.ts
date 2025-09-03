@@ -338,7 +338,11 @@ export class MSGraphMCP {
       {
         title: "Get Current User Profile",
         description: "Get the current user's Microsoft Graph profile",
-        inputSchema: {},
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false
+        },
       },
       async () => {
         const res = await this.svc.getCurrentUserProfile();
