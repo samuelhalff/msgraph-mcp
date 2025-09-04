@@ -201,6 +201,16 @@ export class MSGraphMCP {
       | { content: Array<{ type: "text"; text: string }> }
   >();
 
+  // Backwards-compatible aliases for renamed tools
+  private toolAliases = new Map<string, string>([[
+    "createCalendarEvent",
+    "create-calendar-event",
+  ]]);
+
+  private resolveToolName(name: string): string {
+    return this.toolAliases.get(name) ?? name;
+  }
+
   /** Register a tool with tracking */
   private registerServerTool(
     server: McpServer,
@@ -233,12 +243,56 @@ export class MSGraphMCP {
         (schema.inputSchema as ZodObject<Record<string, ZodTypeAny>>).shape ||
         {},
     };
-    server.registerTool(name, mcpSchema, handler);
+    server.registerTool(
+      name,
+      mcpSchema,
+      async (args: Record<string, unknown>) => {
+        const start = Date.now();
+        const argKeys = args && typeof args === "object" ? Object.keys(args) : [];
+        logger.info("Tool invoked", {
+          tool: name,
+          argKeys,
+          hasAccessToken: !!this.auth?.accessToken,
+        });
+        try {
+          // Validate with Zod if the schema is a Zod object
+          let parsedArgs = args;
+          if (
+            schema.inputSchema &&
+            typeof (schema.inputSchema as any).safeParse === "function"
+          ) {
+            const parsed = (schema.inputSchema as any).safeParse(args);
+            if (!parsed.success) {
+              const issues = parsed.error.issues
+                .map((i: any) => `${i.path?.join(".") || "root"}: ${i.message}`)
+                .join("; ");
+              logger.warn("Tool input validation failed", {
+                tool: name,
+                issues,
+              });
+              throw new Error(`Invalid input: ${issues}`);
+            }
+            parsedArgs = parsed.data;
+          }
+
+          const result = await handler(parsedArgs as Record<string, unknown>);
+          const duration = Date.now() - start;
+          logger.info("Tool completed", { tool: name, durationMs: duration });
+          return result;
+        } catch (e) {
+          const duration = Date.now() - start;
+          const msg = e instanceof Error ? e.message : String(e);
+          logger.error("Tool failed", { tool: name, durationMs: duration, error: msg });
+          throw e;
+        }
+      }
+    );
   }
 
   /** Call a tool directly by name */
   async callTool(name: string, args: Record<string, unknown>) {
-    const handler = this.toolHandlers.get(name);
+    const resolved = this.resolveToolName(name);
+    const handler = this.toolHandlers.get(resolved);
     if (!handler) {
       throw new Error(`Tool '${name}' not found`);
     }
@@ -251,13 +305,14 @@ export class MSGraphMCP {
       void this.server; // Trigger tool registration
     }
     const tools = Array.from(this.toolRegistry.values()).map((tool) => {
-      const jsonSchema = zodToJsonSchema(tool.inputSchema);
+      const jsonSchema = zodToJsonSchema(tool.inputSchema, { target: "jsonSchema7" });
       // Ensure clean JSON Schema with type: "object"
       const cleanSchema = {
         type: "object",
         properties: (jsonSchema as any).properties || {},
         required: (jsonSchema as any).required || [],
-        additionalProperties: (jsonSchema as any).additionalProperties || false,
+        // Relax to true to improve client compatibility (e.g., LibreChat) when extra fields are sent
+        additionalProperties: true,
       };
       return {
         name: tool.name,
@@ -308,8 +363,8 @@ export class MSGraphMCP {
       void this.server;
       // Server is now created and tools are registered
     }
-
-    return this.toolRegistry.has(toolName);
+  const resolved = this.resolveToolName(toolName);
+  return this.toolRegistry.has(resolved);
   }
 
   /** Build and configure the McpServer with all tools */
@@ -519,7 +574,7 @@ export class MSGraphMCP {
         title: "Send Mail",
         description: "Send an email via Microsoft Graph",
         inputSchema: z.object({
-          to: z.string().describe("Recipient email address"),
+          to: z.string().email("Invalid email address").describe("Recipient email address"),
           subject: z.string().describe("Email subject"),
           body: z.string().describe("Email body"),
         }),
@@ -547,8 +602,13 @@ export class MSGraphMCP {
           startDateTime: z
             .string()
             .optional()
+            .refine((s) => !s || !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
             .describe("Start date-time filter"),
-          endDateTime: z.string().optional().describe("End date-time filter"),
+          endDateTime: z
+            .string()
+            .optional()
+            .refine((s) => !s || !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
+            .describe("End date-time filter"),
         }),
       },
       async (args: Record<string, unknown>) => {
@@ -583,14 +643,25 @@ export class MSGraphMCP {
         description: "Create a new calendar event",
         inputSchema: z.object({
           subject: z.string().describe("Event subject"),
-          start: z.string().describe("Start time in ISO format"),
-          end: z.string().describe("End time in ISO format"),
+          start: z
+            .string()
+            .refine((s) => !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
+            .describe("Start time in ISO format"),
+          end: z
+            .string()
+            .refine((s) => !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
+            .describe("End time in ISO format"),
           attendees: z
-            .array(z.string())
+            .array(z.string().email("Invalid email address"))
             .optional()
             .describe("Attendee email addresses"),
           body: z.string().optional().describe("Event body"),
           location: z.string().optional().describe("Event location"),
+          isOnlineMeeting: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe("Whether it's an online meeting (e.g., Teams)"),
         }),
       },
       async (args: Record<string, unknown>) => {
@@ -609,6 +680,9 @@ export class MSGraphMCP {
             emailAddress: { address: email },
             type: "required",
           }));
+        }
+        if ((args as any)?.isOnlineMeeting !== undefined) {
+          (event as any).isOnlineMeeting = (args as any).isOnlineMeeting;
         }
 
         const res = await this.svc.genericGraphRequest(
@@ -711,6 +785,8 @@ export class MSGraphMCP {
           startDateTime: z
             .string()
             .optional()
+            .refine((s) => !s || !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
+            .optional()
             .describe(
               "Start date-time in ISO format to filter events from. Default: current time"
             ),
@@ -747,63 +823,7 @@ export class MSGraphMCP {
       }
     );
 
-    this.registerServerTool(
-      server,
-      "createCalendarEvent",
-      {
-        title: "Create Calendar Event",
-        description:
-          "Create a calendar event (meeting) with other people in Microsoft Graph",
-        inputSchema: z.object({
-          subject: z.string().describe("Subject of the event"),
-          startTime: z
-            .string()
-            .describe(
-              "Start time in ISO format (e.g., '2025-09-02T10:00:00Z')"
-            ),
-          endTime: z
-            .string()
-            .describe("End time in ISO format (e.g., '2025-09-02T11:00:00Z')"),
-          attendees: z
-            .array(z.string())
-            .describe("Array of email addresses of attendees"),
-          body: z.string().optional().describe("Body content of the event"),
-          location: z.string().optional().describe("Location of the event"),
-          isOnlineMeeting: z
-            .boolean()
-            .optional()
-            .default(false)
-            .describe("Whether it's an online meeting (e.g., Teams)"),
-        }),
-      },
-      async (args: Record<string, unknown>) => {
-        const p = args as unknown as CalendarEventParams;
-        try {
-          const event = {
-            subject: p.subject,
-            start: { dateTime: p.startTime, timeZone: "UTC" },
-            end: { dateTime: p.endTime, timeZone: "UTC" },
-            body: { contentType: "Text", content: p.body || "" },
-            location: { displayName: p.location || "" },
-            attendees: p.attendees.map((email: string) => ({
-              emailAddress: { address: email },
-              type: "required",
-            })),
-            isOnlineMeeting: p.isOnlineMeeting,
-          };
-          const res = await this.svc.genericGraphRequest(
-            "/me/events",
-            "post",
-            event
-          );
-          return this.formatResponse("Calendar event created", res);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          logger.error("createCalendarEvent tool error", { msg, params: p });
-          throw new Error(msg);
-        }
-      }
-    );
+  // Note: 'createCalendarEvent' has been consolidated to 'create-calendar-event' via alias.
 
     // Search Files tool - Microsoft Graph Search API for files
     this.registerServerTool(
@@ -990,11 +1010,13 @@ export class MSGraphMCP {
             ),
           startTime: z
             .string()
+            .refine((s) => !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
             .describe(
               "Start time for the schedule query in ISO 8601 format (e.g., '2024-03-15T08:00:00.000Z')"
             ),
           endTime: z
             .string()
+            .refine((s) => !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
             .describe(
               "End time for the schedule query in ISO 8601 format (e.g., '2024-03-15T18:00:00.000Z')"
             ),
@@ -1056,7 +1078,7 @@ export class MSGraphMCP {
             requestBody
           );
 
-          // Format the response for better readability
+          // Format the response for better readability (use scheduleItems per Graph API)
           const formattedSchedule = {
             queryPeriod: {
               startTime: params.startTime,
@@ -1079,18 +1101,17 @@ export class MSGraphMCP {
                     email: params.schedules[index],
                     availabilityView:
                       (schedule.availabilityView as string[]) || [],
-                    busyTimes:
-                      (schedule.busyTimes as Record<string, unknown>[])?.map(
-                        (busyTime: Record<string, unknown>) => {
-                          const start = busyTime.start as Record<
-                            string,
-                            unknown
-                          >;
-                          const end = busyTime.end as Record<string, unknown>;
+                    scheduleItems:
+                      (schedule.scheduleItems as Record<string, unknown>[])?.map(
+                        (item: Record<string, unknown>) => {
+                          const start = item.start as Record<string, unknown>;
+                          const end = item.end as Record<string, unknown>;
                           return {
                             start: (start?.dateTime as string) || "",
                             end: (end?.dateTime as string) || "",
-                            status: (busyTime.status as string) || "busy",
+                            busyType: (item.busyType as string) || "busy",
+                            subject: (item.subject as string) || undefined,
+                            location: (item.location as string) || undefined,
                           };
                         }
                       ) || [],
