@@ -64,6 +64,8 @@ class TestRunner {
     this.passed = 0;
     this.failed = 0;
     this.results = [];
+  // Persist MCP session across tests
+  this.sessionId = undefined;
   }
 
   log(message, level = 'info') {
@@ -113,12 +115,13 @@ class TestRunner {
       'Accept': 'application/json, text/event-stream',
       'User-Agent': 'MCP-Test-Script/1.0'
     };
-    const mergedHeaders = { ...defaultHeaders, ...(options.headers || {}) };
+    const { allowErrorStatus, ...restOptions } = options;
+    const mergedHeaders = { ...defaultHeaders, ...(restOptions.headers || {}) };
 
     const response = await fetch(url, {
       timeout: CONFIG.TIMEOUT,
       // Spread other options first to avoid overriding headers below
-      ...options,
+      ...restOptions,
       headers: mergedHeaders
     });
 
@@ -149,14 +152,14 @@ class TestRunner {
 
     this.log(`Response (${response.status}): ${JSON.stringify(responseData, null, 2)}`, 'debug');
 
-    if (!response.ok) {
+    if (!response.ok && !allowErrorStatus) {
       throw new Error(`HTTP ${response.status}: ${responseText}`);
     }
 
     return { status: response.status, data: responseData, headers: response.headers };
   }
 
-  async makeMcpRequest(method, params = {}, headers = {}) {
+  async makeMcpRequest(method, params = {}, headers = {}, extraOptions = {}) {
     const payload = {
       jsonrpc: '2.0',
       id: Math.random().toString(36).substring(7),
@@ -164,12 +167,13 @@ class TestRunner {
       params
     };
 
-    // Force JSON response for POST to MCP (SSE is via GET only)
-    const mcpHeaders = { ...headers, 'Accept': 'application/json' };
+  // Keep Accept header as provided by caller (default includes both json and sse)
+  const mcpHeaders = { ...headers };
     return this.makeRequest('/mcp', {
       method: 'POST',
       body: JSON.stringify(payload),
-      headers: mcpHeaders
+      headers: mcpHeaders,
+      ...extraOptions
     });
   }
 
@@ -352,6 +356,7 @@ async function testMcpEndpoints(runner) {
 
   // capture session id for subsequent requests (header set by server on response)
   sessionId = response.headers.get ? response.headers.get('mcp-session-id') : response.headers['mcp-session-id'];
+  runner.sessionId = sessionId;
 
     return result;
   });
@@ -394,20 +399,28 @@ async function testMcpEndpoints(runner) {
   });
 
   await runner.test('MCP Ping', async () => {
-    // Ping is not part of the SDK JSON-RPC set here; expect method not found
+    // Some SDKs implement a built-in ping; accept either success (empty result) or method-not-found
     const response = await runner.makeMcpRequest('ping', {}, sessionId ? { 'mcp-session-id': sessionId } : {});
-    if (!response.data.error || response.data.error.code !== -32601) {
-      throw new Error('Expected method not found error (-32601) for ping');
+    if (response.data.error) {
+      if (response.data.error.code !== -32601) {
+        throw new Error('Expected method not found error (-32601) for ping');
+      }
+      return response.data.error;
     }
-    return response.data.error;
+    // If no error, ensure result exists (typically empty object)
+    if (response.data.result === undefined) {
+      throw new Error('Ping response missing result');
+    }
+    return response.data.result;
   });
 
   await runner.test('MCP Authentication Required (401 with WWW-Authenticate)', async () => {
     // Test that protected MCP methods return proper 401 with WWW-Authenticate header
-    const response = await runner.makeMcpRequest('tools/call', {
-      name: 'throttling-stats',
+  const response = await runner.makeMcpRequest('tools/call', {
+      // Use a clearly protected tool that requires Graph auth
+      name: 'list-users',
       arguments: {}
-    }, sessionId ? { 'mcp-session-id': sessionId } : {});
+  }, sessionId ? { 'mcp-session-id': sessionId } : {}, { allowErrorStatus: true });
 
     // Should get a 401 response with proper headers
     if (response.status !== 401) {
@@ -449,7 +462,7 @@ async function testMcpTools(runner) {
   const response = await runner.makeMcpRequest('tools/call', {
       name: 'throttling-stats',
       arguments: {}
-  }, sessionId ? { 'mcp-session-id': sessionId } : {});
+  }, runner.sessionId ? { 'mcp-session-id': runner.sessionId } : {});
 
     // This should work even without OAuth since it's just internal stats
     if (response.data.error) {
@@ -470,7 +483,7 @@ async function testMcpTools(runner) {
   const response = await runner.makeMcpRequest('tools/call', {
       name: 'nonexistent-tool',
       arguments: {}
-  }, sessionId ? { 'mcp-session-id': sessionId } : {});
+  }, runner.sessionId ? { 'mcp-session-id': runner.sessionId } : {});
 
     // This should return an error
     if (!response.data.error) {

@@ -31,7 +31,18 @@ export class GraphMCPServer {
   // Wire MCP request handlers to our MSGraphMCP tools
   private setupHandlers() {
     // initialize
-    this.server.setRequestHandler(InitializeRequestSchema, async () => {
+    this.server.setRequestHandler(InitializeRequestSchema, async (_req, extra) => {
+      // Send initialized notification after responding
+      setTimeout(() => {
+        const transport = (extra as any)?.transport as StreamableHTTPServerTransport | undefined;
+        if (transport) {
+          const notification: Notification = { method: "notifications/initialized" } as any;
+          this.sendNotification(transport, notification).catch((e) =>
+            logger.warn("Failed to send initialized notification", { error: String(e) })
+          );
+        }
+      }, 0);
+
       return {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {}, logging: {} },
@@ -141,7 +152,36 @@ export class GraphMCPServer {
     }
     const isBatch = Array.isArray(body);
     const bodyArray = isBatch ? (body as any[]) : [body];
-    const containsProtectedCall = bodyArray.some((r) => r?.method === "tools/call");
+    // Determine if request contains a known, non-whitelisted tool call
+    // Build a temp MSGraphMCP to consult the registered tool list
+    const allowlist = new Set<string>(["throttling-stats"]);
+    let containsProtectedCall = false;
+    try {
+      const env = this.getEnv();
+      const mcp = new MSGraphMCP({ ...env, ACCESS_TOKEN: bearer || "" } as Env, {
+        accessToken: bearer || "",
+      });
+      // Access server getter to ensure tools are registered
+      void mcp.server;
+      for (const r of bodyArray) {
+        if (r?.method === "tools/call") {
+          const toolName = r?.params?.name as string | undefined;
+          if (!toolName) continue;
+          const isKnown = mcp.hasTools(toolName);
+          const isAllowed = allowlist.has(toolName);
+          if (isKnown && !isAllowed) {
+            containsProtectedCall = true;
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      // If any error in gating logic, fall back to not gating to allow proper JSON-RPC errors downstream
+      containsProtectedCall = false;
+      logger.warn("Auth gating check failed, skipping pre-auth", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
 
     // Debug logging for initialize detection & headers
     try {
@@ -204,9 +244,21 @@ export class GraphMCPServer {
         return;
       }
 
-      res
-        .status(400)
-        .json(this.createErrorResponse("Bad Request: invalid session ID or method."));
+      // If we have a JSON-RPC-shaped request without a valid session, return method-not-found
+      if (body && (body.method || (Array.isArray(body) && body.length > 0))) {
+        const toRpcError = (item: any) => ({
+          jsonrpc: "2.0",
+          id: item?.id ?? null,
+          error: { code: -32601, message: "Method not found" },
+        });
+        const response = Array.isArray(body)
+          ? body.map((i: any) => toRpcError(i))
+          : toRpcError(body);
+        res.status(200).json(response);
+        return;
+      }
+
+      res.status(400).json(this.createErrorResponse("Bad Request: invalid session ID or method."));
       return;
     } catch (error) {
       logger.error("Error handling MCP request", { error: error instanceof Error ? error.message : String(error) });
