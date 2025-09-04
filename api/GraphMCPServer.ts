@@ -148,7 +148,28 @@ export class GraphMCPServer {
   async handleGetRequest(req: Request, res: Response) {
     // Follow example: only allow GET for SSE with valid session id
     const sessionId = req.headers[SESSION_ID_HEADER_NAME] as string | undefined;
+    const userAgent = req.headers['user-agent'];
+    const acceptHeader = req.headers['accept'];
+    const origin = req.headers['origin'];
+    
+    logger.info("SSE GET request received", {
+      sessionId: sessionId || "none",
+      userAgent,
+      acceptHeader,
+      origin,
+      hasTransport: sessionId ? !!this.transports[sessionId] : false,
+      activeSessions: Object.keys(this.transports).length,
+      ip: req.ip || req.connection?.remoteAddress,
+      url: req.url,
+      headers: req.headers
+    });
+
     if (!sessionId || !this.transports[sessionId]) {
+      logger.warn("SSE GET rejected - invalid session", {
+        sessionId: sessionId || "missing",
+        availableSessions: Object.keys(this.transports),
+        reason: !sessionId ? "no session header" : "session not found"
+      });
       res
         .status(200)
         .json({
@@ -159,9 +180,41 @@ export class GraphMCPServer {
       return;
     }
 
-    logger.info(`Establishing SSE stream for session ${sessionId}`);
+    logger.info(`Establishing SSE stream for session ${sessionId}`, {
+      transportExists: !!this.transports[sessionId],
+      sessionAuth: !!this.sessionAuth[sessionId],
+      clientInfo: { userAgent, origin }
+    });
+    
     const transport = this.transports[sessionId];
-    await transport.handleRequest(req as any, res as any);
+    
+    // Add connection lifecycle logging
+    res.on('close', () => {
+      logger.info(`SSE connection closed for session ${sessionId}`, {
+        userAgent,
+        reason: 'client_disconnect'
+      });
+    });
+
+    res.on('error', (error) => {
+      logger.error(`SSE connection error for session ${sessionId}`, {
+        error: error.message,
+        userAgent,
+        stack: error.stack
+      });
+    });
+
+    try {
+      await transport.handleRequest(req as any, res as any);
+      logger.info(`SSE transport handling completed for session ${sessionId}`);
+    } catch (error) {
+      logger.error(`SSE transport handling failed for session ${sessionId}`, {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        userAgent
+      });
+      throw error;
+    }
     return;
   }
 
@@ -280,11 +333,27 @@ export class GraphMCPServer {
     try {
       // Reuse existing session if present
       if (sessionId && this.transports[sessionId]) {
+        logger.info(`Reusing existing session ${sessionId}`, {
+          hasAuth: !!bearer,
+          willUpdateAuth: !!bearer,
+          userAgent: req.headers['user-agent']
+        });
         if (bearer) {
           this.sessionAuth[sessionId] = { accessToken: bearer };
+          logger.info(`Updated auth for existing session ${sessionId}`);
         }
         const transport = this.transports[sessionId];
-        await transport.handleRequest(req as any, res as any, body);
+        
+        try {
+          await transport.handleRequest(req as any, res as any, body);
+          logger.info(`Successfully handled request for session ${sessionId}`);
+        } catch (error) {
+          logger.error(`Transport request handling failed for session ${sessionId}`, {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+          });
+          throw error;
+        }
         return;
       }
 
@@ -292,21 +361,37 @@ export class GraphMCPServer {
   const isInit = this.isInitializeRequest(body);
       if (!sessionId && isInit) {
         logger.info(
-          "Detected initialize request; creating new streamable transport"
+          "Detected initialize request; creating new streamable transport", {
+            userAgent: req.headers['user-agent'],
+            origin: req.headers['origin'],
+            ip: req.ip || req.connection?.remoteAddress,
+            acceptHeader,
+            bodyPreview: JSON.stringify(body).substring(0, 200)
+          }
         );
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
         });
 
+        logger.info("Connecting server to new transport");
         await this.server.connect(transport);
+        
+        logger.info("Handling initialize request with new transport");
         await transport.handleRequest(req as any, res as any, body);
 
         const sid = (transport as any).sessionId as string | undefined;
         if (sid) {
           this.transports[sid] = transport;
+          logger.info(`Transport registered with session ID: ${sid}`, {
+            totalSessions: Object.keys(this.transports).length,
+            hasAuth: !!bearer
+          });
           if (bearer) {
             this.sessionAuth[sid] = { accessToken: bearer };
+            logger.info(`Auth stored for session ${sid}`);
           }
+        } else {
+          logger.warn("Transport created but no session ID available");
         }
         return;
       }
@@ -341,8 +426,33 @@ export class GraphMCPServer {
   }
 
   async cleanup() {
+    logger.info("Starting GraphMCPServer cleanup", {
+      activeSessions: Object.keys(this.transports).length,
+      hasToolInterval: !!this.toolInterval
+    });
+    
     this.toolInterval && clearInterval(this.toolInterval);
+    
+    // Clean up all transports
+    for (const [sessionId, transport] of Object.entries(this.transports)) {
+      try {
+        logger.info(`Cleaning up transport for session ${sessionId}`);
+        // If transport has cleanup method, call it
+        if (typeof (transport as any).close === 'function') {
+          await (transport as any).close();
+        }
+      } catch (error) {
+        logger.warn(`Failed to cleanup transport ${sessionId}`, {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    
+    this.transports = {};
+    this.sessionAuth = {};
+    
     await this.server.close();
+    logger.info("GraphMCPServer cleanup completed");
   }
 
   private async sendNotification(
@@ -353,7 +463,25 @@ export class GraphMCPServer {
       ...notification,
       jsonrpc: "2.0",
     } as any;
-    await (transport as any).send(rpcNotification);
+    
+    try {
+      logger.debug("Sending notification", {
+        method: notification.method,
+        sessionId: (transport as any).sessionId,
+        notificationType: typeof notification
+      });
+      await (transport as any).send(rpcNotification);
+      logger.debug("Notification sent successfully", {
+        method: notification.method
+      });
+    } catch (error) {
+      logger.error("Failed to send notification", {
+        method: notification.method,
+        error: error instanceof Error ? error.message : String(error),
+        sessionId: (transport as any).sessionId
+      });
+      throw error;
+    }
   }
 
   private createErrorResponse(message: string) {
