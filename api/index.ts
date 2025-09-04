@@ -376,10 +376,99 @@ const mcpServer = new GraphMCPServer(
 );
 const MCP_ENDPOINT = "/mcp";
 app.post(MCP_ENDPOINT, async (req: Request, res: Response) => {
-  await mcpServer.handlePostRequest(req, res);
+  const startTime = Date.now();
+  const sessionId = req.headers['mcp-session-id'];
+  const userAgent = req.headers['user-agent'];
+  const origin = req.headers['origin'];
+  const contentLength = req.headers['content-length'];
+  
+  logger.info("MCP POST request received", {
+    sessionId: sessionId || "none",
+    userAgent,
+    origin,
+    contentLength,
+    ip: req.ip || req.connection?.remoteAddress,
+    url: req.url,
+    hasBody: !!req.body,
+    bodyType: typeof req.body,
+    contentType: req.headers['content-type']
+  });
+
+  try {
+    await mcpServer.handlePostRequest(req, res);
+    const duration = Date.now() - startTime;
+    logger.info("MCP POST completed", {
+      sessionId: sessionId || "none",
+      duration: `${duration}ms`,
+      statusCode: res.statusCode
+    });
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logger.error("MCP POST failed", {
+      sessionId: sessionId || "none",
+      duration: `${duration}ms`,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    throw error;
+  }
 });
+
 app.get(MCP_ENDPOINT, async (req: Request, res: Response) => {
-  await mcpServer.handleGetRequest(req, res);
+  const startTime = Date.now();
+  const sessionId = req.headers['mcp-session-id'];
+  const userAgent = req.headers['user-agent'];
+  const origin = req.headers['origin'];
+  const acceptHeader = req.headers['accept'];
+  
+  logger.info("MCP GET (SSE) request received", {
+    sessionId: sessionId || "none",
+    userAgent,
+    origin,
+    acceptHeader,
+    ip: req.ip || req.connection?.remoteAddress,
+    url: req.url,
+    queryParams: req.query
+  });
+
+  // Track connection state
+  res.on('close', () => {
+    const duration = Date.now() - startTime;
+    logger.info("MCP GET connection closed", {
+      sessionId: sessionId || "none",
+      duration: `${duration}ms`,
+      reason: 'client_disconnect'
+    });
+  });
+
+  res.on('error', (error) => {
+    const duration = Date.now() - startTime;
+    logger.error("MCP GET connection error", {
+      sessionId: sessionId || "none",
+      duration: `${duration}ms`,
+      error: error.message,
+      stack: error.stack
+    });
+  });
+
+  try {
+    await mcpServer.handleGetRequest(req, res);
+    const duration = Date.now() - startTime;
+    logger.info("MCP GET completed", {
+      sessionId: sessionId || "none",
+      duration: `${duration}ms`,
+      statusCode: res.statusCode
+    });
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logger.error("MCP GET failed", {
+      sessionId: sessionId || "none",
+      duration: `${duration}ms`,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    throw error;
+  }
 });
 
 // Prewarm: register tools at startup to avoid first-request latency

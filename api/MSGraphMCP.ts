@@ -295,12 +295,93 @@ export class MSGraphMCP {
 
   /** Call a tool directly by name */
   async callTool(name: string, args: Record<string, unknown>) {
+    const startTime = Date.now();
     const resolved = this.resolveToolName(name);
+    
+    logger.info("Tool invocation started", {
+      originalName: name,
+      resolvedName: resolved,
+      hasArgs: !!args,
+      argKeys: args ? Object.keys(args) : [],
+      argsPreview: args ? JSON.stringify(args).substring(0, 200) + (JSON.stringify(args).length > 200 ? "..." : "") : "none"
+    });
+
     const handler = this.toolHandlers.get(resolved);
     if (!handler) {
+      logger.error("Tool not found", {
+        requestedName: name,
+        resolvedName: resolved,
+        availableTools: Array.from(this.toolHandlers.keys()),
+        duration: `${Date.now() - startTime}ms`
+      });
       throw new Error(`Tool '${name}' not found`);
     }
-    return await handler(args);
+
+    // Validate input if we have schema
+    const toolInfo = this.toolRegistry.get(resolved);
+    if (toolInfo?.inputSchema) {
+      try {
+        const parseResult = toolInfo.inputSchema.safeParse(args);
+        if (!parseResult.success) {
+          const validationErrors = parseResult.error.errors.map(err => ({
+            path: err.path.join('.'),
+            message: err.message,
+            code: err.code
+          }));
+          
+          logger.warn("Tool input validation failed", {
+            toolName: resolved,
+            errors: validationErrors,
+            inputArgs: args,
+            duration: `${Date.now() - startTime}ms`
+          });
+          
+          // Still proceed but log the validation issues
+        } else {
+          logger.debug("Tool input validation passed", {
+            toolName: resolved,
+            validatedArgs: parseResult.data
+          });
+        }
+      } catch (validationError) {
+        logger.warn("Tool input validation error", {
+          toolName: resolved,
+          error: validationError instanceof Error ? validationError.message : String(validationError),
+          inputArgs: args
+        });
+      }
+    }
+
+    try {
+      logger.info("Executing tool handler", {
+        toolName: resolved,
+        hasAuth: !!this.auth.accessToken
+      });
+      
+      const result = await handler(args);
+      const duration = Date.now() - startTime;
+      
+      logger.info("Tool execution completed", {
+        toolName: resolved,
+        duration: `${duration}ms`,
+        resultType: typeof result,
+        hasContent: !!(result as any)?.content,
+        contentCount: Array.isArray((result as any)?.content) ? (result as any).content.length : 0,
+        success: true
+      });
+      
+      return result;
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      logger.error("Tool execution failed", {
+        toolName: resolved,
+        duration: `${duration}ms`,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        inputArgs: args
+      });
+      throw error;
+    }
   }
 
   /** Get list of available tools from our registry */
