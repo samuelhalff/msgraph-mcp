@@ -29,32 +29,36 @@ const registeredClients = new Map<string, RegisteredClient>();
 function extractScopesFromToken(token: string): string[] {
   try {
     if (!token) return [];
-    
+
     // Decode JWT token (basic extraction without verification for scope reading)
-    const parts = token.split('.');
+    const parts = token.split(".");
     if (parts.length !== 3) return [];
-    
+
     const payload = JSON.parse(atob(parts[1]));
-    
+
     // Extract scopes from different possible claims
     const scopes = payload.scp || payload.scope || payload.scopes || "";
-    
-    if (typeof scopes === 'string') {
-      return scopes.split(' ').filter(s => s.length > 0);
+
+    if (typeof scopes === "string") {
+      return scopes.split(" ").filter((s) => s.length > 0);
     } else if (Array.isArray(scopes)) {
       return scopes;
     }
-    
+
     return [];
   } catch (error) {
-    logger.warn("Failed to extract scopes from token", { error: error instanceof Error ? error.message : String(error) });
+    logger.warn("Failed to extract scopes from token", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return [];
   }
 }
 
 // Default Microsoft Graph scopes for when no token is available
 const DEFAULT_MSGRAPH_SCOPES = [
-  process.env.GRAPH_BASE_URL ? `${process.env.GRAPH_BASE_URL}/.default` : "https://graph.microsoft.com/.default"
+  process.env.GRAPH_BASE_URL
+    ? `${process.env.GRAPH_BASE_URL}/.default`
+    : "https://graph.microsoft.com/.default",
 ];
 
 // Environment variables
@@ -104,152 +108,175 @@ app.use((req: Request, res: Response, next: express.NextFunction) => {
 });
 
 // OAuth Protected Resource Metadata (RFC9728) - REQUIRED by MCP spec
-app.get("/.well-known/oauth-protected-resource", async (req: Request, res: Response) => {
-  logger.info("OAuth Protected Resource Metadata endpoint hit", {
-    query: req.query,
-    userAgent: req.header("User-Agent"),
-    ip: req.header("x-forwarded-for") || req.header("x-real-ip"),
-  });
+app.get(
+  "/.well-known/oauth-protected-resource",
+  async (req: Request, res: Response) => {
+    logger.info("OAuth Protected Resource Metadata endpoint hit", {
+      query: req.query,
+      userAgent: req.header("User-Agent"),
+      ip: req.header("x-forwarded-for") || req.header("x-real-ip"),
+    });
 
-  // Get the server's base URL for canonical resource URI
-  const protocol = req.header("x-forwarded-proto") || "https";
-  const host = req.header("host");
-  const serverBaseUrl = `${protocol}://${host}`;
+    // Get the server's base URL for canonical resource URI
+    const protocol = req.header("x-forwarded-proto") || "https";
+    const host = req.header("host");
+    const serverBaseUrl = `${protocol}://${host}`;
 
-  // Try to extract scopes from Authorization header if present
-  let supportedScopes = DEFAULT_MSGRAPH_SCOPES;
-  const authHeader = req.header("Authorization");
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    const token = authHeader.replace("Bearer ", "");
-    const tokenScopes = extractScopesFromToken(token);
-    if (tokenScopes.length > 0) {
-      // Use scopes from the actual token, ensuring we include Graph scopes
-      supportedScopes = [...new Set([...tokenScopes, ...DEFAULT_MSGRAPH_SCOPES])];
+    // Try to extract scopes from Authorization header if present
+    let supportedScopes = DEFAULT_MSGRAPH_SCOPES;
+    const authHeader = req.header("Authorization");
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.replace("Bearer ", "");
+      const tokenScopes = extractScopesFromToken(token);
+      if (tokenScopes.length > 0) {
+        // Use scopes from the actual token, ensuring we include Graph scopes
+        supportedScopes = [
+          ...new Set([...tokenScopes, ...DEFAULT_MSGRAPH_SCOPES]),
+        ];
+      }
     }
+
+    const protectedResourceMetadata = {
+      // RFC9728 Section 3.1 - Required fields
+      resource: serverBaseUrl, // Canonical server URI as defined in MCP spec
+      authorization_servers: [
+        `${
+          process.env.AUTH_BASE_URL ?? "https://login.microsoftonline.com"
+        }/${TENANT_ID}/v2.0`,
+      ],
+
+      // RFC9728 Section 3.2 - Optional but recommended fields
+      scopes_supported: supportedScopes,
+
+      // MCP-specific metadata
+      mcp_version: "2024-11-05",
+      server_info: {
+        name: "Microsoft Graph MCP Server",
+        version: "1.0.0",
+      },
+    };
+
+    logger.info("OAuth Protected Resource Metadata generated", {
+      resource: protectedResourceMetadata.resource,
+      authorizationServers: protectedResourceMetadata.authorization_servers,
+      scopesCount: protectedResourceMetadata.scopes_supported.length,
+      dynamicScopes: authHeader ? true : false,
+    });
+
+    return res.json(protectedResourceMetadata);
   }
-
-  const protectedResourceMetadata = {
-    // RFC9728 Section 3.1 - Required fields
-    resource: serverBaseUrl, // Canonical server URI as defined in MCP spec
-    authorization_servers: [
-      `${process.env.AUTH_BASE_URL ?? 'https://login.microsoftonline.com'}/${TENANT_ID}/v2.0`
-    ],
-    
-    // RFC9728 Section 3.2 - Optional but recommended fields
-    scopes_supported: supportedScopes,
-    
-    // MCP-specific metadata
-    mcp_version: "2024-11-05",
-    server_info: {
-      name: "Microsoft Graph MCP Server",
-      version: "1.0.0"
-    }
-  };
-
-  logger.info("OAuth Protected Resource Metadata generated", {
-    resource: protectedResourceMetadata.resource,
-    authorizationServers: protectedResourceMetadata.authorization_servers,
-    scopesCount: protectedResourceMetadata.scopes_supported.length,
-    dynamicScopes: authHeader ? true : false
-  });
-
-  return res.json(protectedResourceMetadata);
-});
+);
 
 // OAuth Authorization Server Discovery
-app.get("/.well-known/oauth-authorization-server", async (req: Request, res: Response) => {
-  logger.info("OAuth discovery endpoint hit", {
-  query: req.query,
-  userAgent: req.header("User-Agent"),
-  ip: req.header("x-forwarded-for") || req.header("x-real-ip"),
-  });
+app.get(
+  "/.well-known/oauth-authorization-server",
+  async (req: Request, res: Response) => {
+    logger.info("OAuth discovery endpoint hit", {
+      query: req.query,
+      userAgent: req.header("User-Agent"),
+      ip: req.header("x-forwarded-for") || req.header("x-real-ip"),
+    });
 
     // Use Microsoft Azure endpoints as per MCP standards - from environment variables
-  const tenantId = TENANT_ID;
-  const clientId = CLIENT_ID;
-  const redirectUri = REDIRECT_URI;
-  const authBaseUrl = process.env.AUTH_BASE_URL ?? 'https://login.microsoftonline.com';
-  const graphBaseUrl = process.env.GRAPH_BASE_URL ?? 'https://graph.microsoft.com';
-  
-  // Ensure URLs match exactly the format you specified
-  const authorizationUrl = `${authBaseUrl}/${tenantId}/oauth2/v2.0/authorize`;
-  const tokenUrl = `${authBaseUrl}/${tenantId}/oauth2/v2.0/token`;
-  const discoveryUrl = `${authBaseUrl}/${tenantId}/v2.0/.well-known/openid-configuration`;
-  
-  const discoveryDoc = {
-    issuer: `${authBaseUrl}/${tenantId}/v2.0`,
-    authorization_endpoint: authorizationUrl,
-    token_endpoint: tokenUrl,
-    jwks_uri: `${authBaseUrl}/${tenantId}/discovery/v2.0/keys`,
-    response_types_supported: ["code", "id_token", "code id_token", "id_token token"],
-    response_modes_supported: ["query", "fragment", "form_post"],
-    grant_types_supported: ["authorization_code", "refresh_token", "implicit"],
-    token_endpoint_auth_methods_supported: [
-      "client_secret_post",
-      "private_key_jwt",
-      "client_secret_basic"
-    ],
-    code_challenge_methods_supported: ["S256"],
-    scopes_supported: [
-      "openid",
-      "profile", 
-      "email",
-      "offline_access",
-      ...DEFAULT_MSGRAPH_SCOPES
-    ],
-    claims_supported: [
-      "sub",
-      "iss",
-      "aud",
-      "exp",
-      "iat",
-      "nbf",
-      "auth_time",
-      "name",
-      "given_name",
-      "family_name",
-      "email",
-      "preferred_username",
-      "tid",
-      "oid",
-      "upn"
-    ],
-    id_token_signing_alg_values_supported: ["RS256"],
-    userinfo_endpoint: `${graphBaseUrl}/oidc/userinfo`,
-    end_session_endpoint: `${authBaseUrl}/${tenantId}/oauth2/v2.0/logout`,
-    // MCP-specific metadata matching your requirements exactly
-    discoveryUrl: discoveryUrl,
-    client_id: clientId,
-    scope: DEFAULT_MSGRAPH_SCOPES[0],
-    authorization_url: authorizationUrl,
-    token_url: tokenUrl,
-    redirect_uri: redirectUri,
-    grantType: "authorization_code",
-    responseType: "code",
-    useRefreshTokens: true,
-    usePkce: true
-  };
+    const tenantId = TENANT_ID;
+    const clientId = CLIENT_ID;
+    const redirectUri = REDIRECT_URI;
+    const authBaseUrl =
+      process.env.AUTH_BASE_URL ?? "https://login.microsoftonline.com";
+    const graphBaseUrl =
+      process.env.GRAPH_BASE_URL ?? "https://graph.microsoft.com";
 
-  logger.info("OAuth discovery document generated", {
-    issuer: discoveryDoc.issuer,
-    authEndpoint: discoveryDoc.authorization_endpoint,
-    tokenEndpoint: discoveryDoc.token_endpoint,
-    tenantId: tenantId,
-    clientId: discoveryDoc.client_id
-  });
+    // Ensure URLs match exactly the format you specified
+    const authorizationUrl = `${authBaseUrl}/${tenantId}/oauth2/v2.0/authorize`;
+    const tokenUrl = `${authBaseUrl}/${tenantId}/oauth2/v2.0/token`;
+    const discoveryUrl = `${authBaseUrl}/${tenantId}/v2.0/.well-known/openid-configuration`;
 
-  return res.json(discoveryDoc);
-});
+    const discoveryDoc = {
+      issuer: `${authBaseUrl}/${tenantId}/v2.0`,
+      authorization_endpoint: authorizationUrl,
+      token_endpoint: tokenUrl,
+      jwks_uri: `${authBaseUrl}/${tenantId}/discovery/v2.0/keys`,
+      response_types_supported: [
+        "code",
+        "id_token",
+        "code id_token",
+        "id_token token",
+      ],
+      response_modes_supported: ["query", "fragment", "form_post"],
+      grant_types_supported: [
+        "authorization_code",
+        "refresh_token",
+        "implicit",
+      ],
+      token_endpoint_auth_methods_supported: [
+        "client_secret_post",
+        "private_key_jwt",
+        "client_secret_basic",
+      ],
+      code_challenge_methods_supported: ["S256"],
+      scopes_supported: [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        ...DEFAULT_MSGRAPH_SCOPES,
+      ],
+      claims_supported: [
+        "sub",
+        "iss",
+        "aud",
+        "exp",
+        "iat",
+        "nbf",
+        "auth_time",
+        "name",
+        "given_name",
+        "family_name",
+        "email",
+        "preferred_username",
+        "tid",
+        "oid",
+        "upn",
+      ],
+      id_token_signing_alg_values_supported: ["RS256"],
+      userinfo_endpoint: `${graphBaseUrl}/oidc/userinfo`,
+      end_session_endpoint: `${authBaseUrl}/${tenantId}/oauth2/v2.0/logout`,
+      // MCP-specific metadata matching your requirements exactly
+      discoveryUrl: discoveryUrl,
+      client_id: clientId,
+      scope: DEFAULT_MSGRAPH_SCOPES[0],
+      authorization_url: authorizationUrl,
+      token_url: tokenUrl,
+      redirect_uri: redirectUri,
+      grantType: "authorization_code",
+      responseType: "code",
+      useRefreshTokens: true,
+      usePkce: true,
+    };
+
+    logger.info("OAuth discovery document generated", {
+      issuer: discoveryDoc.issuer,
+      authEndpoint: discoveryDoc.authorization_endpoint,
+      tokenEndpoint: discoveryDoc.token_endpoint,
+      tenantId: tenantId,
+      clientId: discoveryDoc.client_id,
+    });
+
+    return res.json(discoveryDoc);
+  }
+);
 
 // Dynamic Client Registration endpoint
 app.post("/register", async (req: Request, res: Response) => {
   logger.info("/register endpoint hit");
   try {
-  const body = req.body;
+    const body = req.body;
 
     // Validate required fields
     if (!body.client_name || !body.redirect_uris) {
-      return res.status(400).json({ error: "Missing required fields: client_name, redirect_uris" });
+      return res
+        .status(400)
+        .json({ error: "Missing required fields: client_name, redirect_uris" });
     }
 
     // Generate a client ID
@@ -268,25 +295,20 @@ app.post("/register", async (req: Request, res: Response) => {
     });
 
     // Return the client registration response
-  return res.status(201).json(
-      {
-        client_id: clientId,
-        client_name: body.client_name || "MCP Client",
-        redirect_uris: body.redirect_uris || [],
-        grant_types: body.grant_types || [
-          "authorization_code",
-          "refresh_token",
-        ],
-        response_types: body.response_types || ["code"],
-        scope: body.scope,
-        token_endpoint_auth_method: "none",
-      },
-    );
+    return res.status(201).json({
+      client_id: clientId,
+      client_name: body.client_name || "MCP Client",
+      redirect_uris: body.redirect_uris || [],
+      grant_types: body.grant_types || ["authorization_code", "refresh_token"],
+      response_types: body.response_types || ["code"],
+      scope: body.scope,
+      token_endpoint_auth_method: "none",
+    });
   } catch (error) {
     logger.error("Error in client registration", {
       error: error instanceof Error ? error.message : String(error),
     });
-  return res.status(400).json({ error: "Invalid request body" });
+    return res.status(400).json({ error: "Invalid request body" });
   }
 });
 
@@ -313,7 +335,7 @@ app.get("/authorize", async (req: Request, res: Response) => {
 // Token exchange endpoint
 app.post("/token", async (req: Request, res: Response) => {
   try {
-  const body = req.body || {};
+    const body = req.body || {};
 
     if (body.grant_type === "authorization_code") {
       const result = await exchangeCodeForToken(

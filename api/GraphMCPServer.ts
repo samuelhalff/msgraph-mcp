@@ -31,43 +31,61 @@ export class GraphMCPServer {
   // Wire MCP request handlers to our MSGraphMCP tools
   private setupHandlers() {
     // initialize
-    this.server.setRequestHandler(InitializeRequestSchema, async (_req, extra) => {
-      // Send initialized notification after responding
-      setTimeout(() => {
-        const transport = (extra as any)?.transport as StreamableHTTPServerTransport | undefined;
-        if (transport) {
-          const notification: Notification = { method: "notifications/initialized" } as any;
-          this.sendNotification(transport, notification).catch((e) =>
-            logger.warn("Failed to send initialized notification", { error: String(e) })
-          );
-        }
-      }, 0);
+    this.server.setRequestHandler(
+      InitializeRequestSchema,
+      async (_req, extra) => {
+        // Send initialized notification after responding
+        setTimeout(() => {
+          const transport = (extra as any)?.transport as
+            | StreamableHTTPServerTransport
+            | undefined;
+          if (transport) {
+            const notification: Notification = {
+              method: "notifications/initialized",
+            } as any;
+            this.sendNotification(transport, notification).catch((e) =>
+              logger.warn("Failed to send initialized notification", {
+                error: String(e),
+              })
+            );
+          }
+        }, 0);
 
-      return {
-        protocolVersion: "2024-11-05",
-        capabilities: { tools: {}, logging: {} },
-        serverInfo: { name: "Microsoft Graph MCP Server", version: "1.0.0" },
-      };
-    });
+        return {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {}, logging: {} },
+          serverInfo: { name: "Microsoft Graph MCP Server", version: "1.0.0" },
+        };
+      }
+    );
 
     // tools/list
-    this.server.setRequestHandler(ListToolsRequestSchema, async (_req, extra) => {
-      const { env } = this.getEnvAndAuthFromExtra(extra);
-      const mcp = new MSGraphMCP(env, { accessToken: "" });
-      return { tools: mcp.getAvailableTools() };
-    });
+    this.server.setRequestHandler(
+      ListToolsRequestSchema,
+      async (_req, extra) => {
+        const { env } = this.getEnvAndAuthFromExtra(extra);
+        const mcp = new MSGraphMCP(env, { accessToken: "" });
+        return { tools: mcp.getAvailableTools() };
+      }
+    );
 
     // tools/call
-    this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-      const { env, auth } = this.getEnvAndAuthFromExtra(extra);
-      const mcp = new MSGraphMCP(env, auth);
-  // Ensure tools are registered and handlers populated
-  void mcp.server;
-      const name = request.params.name;
-      const args = request.params.arguments || {};
-      logger.info("tools/call invoked", { name, hasToken: !!auth.accessToken });
-      return await mcp.callTool(name, args as Record<string, unknown>);
-    });
+    this.server.setRequestHandler(
+      CallToolRequestSchema,
+      async (request, extra) => {
+        const { env, auth } = this.getEnvAndAuthFromExtra(extra);
+        const mcp = new MSGraphMCP(env, auth);
+        // Ensure tools are registered and handlers populated
+        void mcp.server;
+        const name = request.params.name;
+        const args = request.params.arguments || {};
+        logger.info("tools/call invoked", {
+          name,
+          hasToken: !!auth.accessToken,
+        });
+        return await mcp.callTool(name, args as Record<string, unknown>);
+      }
+    );
 
     // Optional: periodically notify tool list changes (no-op but example parity)
     this.toolInterval = setInterval(() => {
@@ -76,7 +94,9 @@ export class GraphMCPServer {
       };
       for (const transport of Object.values(this.transports)) {
         this.sendNotification(transport, notification).catch((e) =>
-          logger.warn("Failed to send tool list notification", { error: String(e) })
+          logger.warn("Failed to send tool list notification", {
+            error: String(e),
+          })
         );
       }
     }, 5 * 60 * 1000);
@@ -97,15 +117,20 @@ export class GraphMCPServer {
       USE_GRAPH_BETA: process.env.USE_GRAPH_BETA,
       CERTIFICATE_PATH: process.env.CERTIFICATE_PATH,
       CERTIFICATE_PASSWORD: process.env.CERTIFICATE_PASSWORD,
-  SCOPES: process.env.SCOPES,
-  PORT: process.env.PORT,
+      SCOPES: process.env.SCOPES,
+      PORT: process.env.PORT,
     } as Env;
   }
 
-  private getEnvAndAuthFromExtra(extra: unknown): { env: Env; auth: MSGraphAuthContext } {
+  private getEnvAndAuthFromExtra(extra: unknown): {
+    env: Env;
+    auth: MSGraphAuthContext;
+  } {
     const env = this.getEnv();
     const sessionId = this.getSessionIdFromExtra(extra);
-    const auth = (sessionId && this.sessionAuth[sessionId]) || { accessToken: "" };
+    const auth = (sessionId && this.sessionAuth[sessionId]) || {
+      accessToken: "",
+    };
     // Inject ACCESS_TOKEN for client-provided token mode
     const envWithToken = { ...env, ACCESS_TOKEN: auth.accessToken } as Env;
     return { env: envWithToken, auth };
@@ -124,8 +149,14 @@ export class GraphMCPServer {
     // Follow example: only allow GET for SSE with valid session id
     const sessionId = req.headers[SESSION_ID_HEADER_NAME] as string | undefined;
     if (!sessionId || !this.transports[sessionId]) {
-  res.status(200).json({ jsonrpc: "2.0", id: null, error: { code: -32601, message: "Method not found" } });
-  return;
+      res
+        .status(200)
+        .json({
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32601, message: "Method not found" },
+        });
+      return;
     }
 
     logger.info(`Establishing SSE stream for session ${sessionId}`);
@@ -137,11 +168,13 @@ export class GraphMCPServer {
   async handlePostRequest(req: Request, res: Response) {
     const sessionId = req.headers[SESSION_ID_HEADER_NAME] as string | undefined;
     const authHeader = req.header("Authorization");
-    const bearer = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+    const bearer = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : undefined;
     const acceptHeader = req.header("accept");
 
-    // Enforce auth for tools/call before handing to transport so we can return 401 with header
-    // Body may arrive as text/plain from node-fetch defaults; try to parse JSON if needed
+  // Enforce auth for tools/call before handing to transport so we can return 401 with header
+  // Body may arrive as text/plain from node-fetch defaults; try to parse JSON if needed
     let body: any = req.body;
     if (typeof body === "string") {
       try {
@@ -150,17 +183,42 @@ export class GraphMCPServer {
         // leave as-is; will result in 400 below if not initialize
       }
     }
-    const isBatch = Array.isArray(body);
+  const isBatch = Array.isArray(body);
     const bodyArray = isBatch ? (body as any[]) : [body];
+  logger.info("MCP POST request received with body:", { bodyArray });
+    const isInitEarly = this.isInitializeRequest(body);
+    const containsToolsCall = bodyArray.some((r) => r?.method === "tools/call");
+    // If there's no session yet and this isn't initialize or tools/call, return method-not-found
+    if (!sessionId && !isInitEarly && !containsToolsCall) {
+      logger.info("Early method-not-found path", {
+        hasSessionId: !!sessionId,
+        isInitEarly,
+        containsToolsCall,
+        method: body?.method,
+      });
+      const toRpcError = (item: any) => ({
+        jsonrpc: "2.0",
+        id: item?.id ?? null,
+        error: { code: -32601, message: "Method not found" },
+      });
+      const response = Array.isArray(body)
+        ? body.map((i: any) => toRpcError(i))
+        : toRpcError(body);
+      res.status(200).json(response);
+      return;
+    }
     // Determine if request contains a known, non-whitelisted tool call
     // Build a temp MSGraphMCP to consult the registered tool list
     const allowlist = new Set<string>(["throttling-stats"]);
     let containsProtectedCall = false;
     try {
       const env = this.getEnv();
-      const mcp = new MSGraphMCP({ ...env, ACCESS_TOKEN: bearer || "" } as Env, {
-        accessToken: bearer || "",
-      });
+      const mcp = new MSGraphMCP(
+        { ...env, ACCESS_TOKEN: bearer || "" } as Env,
+        {
+          accessToken: bearer || "",
+        }
+      );
       // Access server getter to ensure tools are registered
       void mcp.server;
       for (const r of bodyArray) {
@@ -185,8 +243,12 @@ export class GraphMCPServer {
 
     // Debug logging for initialize detection & headers
     try {
-      const debugMethod = isBatch ? bodyArray.map((r) => r?.method).join(",") : body?.method;
-      const debugJsonRpc = isBatch ? bodyArray.map((r) => r?.jsonrpc).join(",") : body?.jsonrpc;
+      const debugMethod = isBatch
+        ? bodyArray.map((r) => r?.method).join(",")
+        : body?.method;
+      const debugJsonRpc = isBatch
+        ? bodyArray.map((r) => r?.jsonrpc).join(",")
+        : body?.jsonrpc;
       logger.info("MCP POST received", {
         hasSessionId: !!sessionId,
         methods: debugMethod,
@@ -207,12 +269,15 @@ export class GraphMCPServer {
       res.status(401).json({
         jsonrpc: "2.0",
         id: body?.id ?? null,
-        error: { code: -32002, message: "Authentication required for this method" },
+        error: {
+          code: -32002,
+          message: "Authentication required for this method",
+        },
       });
       return;
     }
 
-  try {
+    try {
       // Reuse existing session if present
       if (sessionId && this.transports[sessionId]) {
         if (bearer) {
@@ -224,15 +289,17 @@ export class GraphMCPServer {
       }
 
       // Create new transport if this is an initialize request
-      const isInit = this.isInitializeRequest(body);
+  const isInit = this.isInitializeRequest(body);
       if (!sessionId && isInit) {
-        logger.info("Detected initialize request; creating new streamable transport");
-  const transport = new StreamableHTTPServerTransport({
+        logger.info(
+          "Detected initialize request; creating new streamable transport"
+        );
+        const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
         });
 
-  await this.server.connect(transport);
-  await transport.handleRequest(req as any, res as any, body);
+        await this.server.connect(transport);
+        await transport.handleRequest(req as any, res as any, body);
 
         const sid = (transport as any).sessionId as string | undefined;
         if (sid) {
@@ -258,10 +325,16 @@ export class GraphMCPServer {
         return;
       }
 
-      res.status(400).json(this.createErrorResponse("Bad Request: invalid session ID or method."));
+      res
+        .status(400)
+        .json(
+          this.createErrorResponse("Bad Request: invalid session ID or method.")
+        );
       return;
     } catch (error) {
-      logger.error("Error handling MCP request", { error: error instanceof Error ? error.message : String(error) });
+      logger.error("Error handling MCP request", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       res.status(500).json(this.createErrorResponse("Internal server error."));
       return;
     }
