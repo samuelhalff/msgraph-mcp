@@ -366,14 +366,22 @@ app.post("/token", async (req: Request, res: Response) => {
 });
 
 // Microsoft Graph MCP endpoint with built-in auth logic
-
 // Set up MCP streamable HTTP using SDK example pattern
+try {
 const mcpServer = new GraphMCPServer(
   new MCPServerCore(
     { name: "mcp-server", version: "1.0.0" },
     { capabilities: { tools: {}, logging: {} } }
   )
 );
+  logger.info("GraphMCPServer initialized");
+} catch (err) {
+  logger.error("Failed to initialize MCPServerCore", {
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
+  throw new Error("MCPServerCore initialization failed, stopping server");
+}
 const MCP_ENDPOINT = "/mcp";
 app.post(MCP_ENDPOINT, async (req: Request, res: Response) => {
   const startTime = Date.now();
