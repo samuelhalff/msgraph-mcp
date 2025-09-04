@@ -124,8 +124,8 @@ export class GraphMCPServer {
     // Follow example: only allow GET for SSE with valid session id
     const sessionId = req.headers[SESSION_ID_HEADER_NAME] as string | undefined;
     if (!sessionId || !this.transports[sessionId]) {
-      res.status(400).json(this.createErrorResponse("Bad Request: invalid session ID or method."));
-      return;
+  res.status(200).json({ jsonrpc: "2.0", id: null, error: { code: -32601, message: "Method not found" } });
+  return;
     }
 
     logger.info(`Establishing SSE stream for session ${sessionId}`);
