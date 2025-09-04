@@ -202,10 +202,9 @@ export class MSGraphMCP {
   >();
 
   // Backwards-compatible aliases for renamed tools
-  private toolAliases = new Map<string, string>([[
-    "createCalendarEvent",
-    "create-calendar-event",
-  ]]);
+  private toolAliases = new Map<string, string>([
+    ["createCalendarEvent", "create-calendar-event"],
+  ]);
 
   private resolveToolName(name: string): string {
     return this.toolAliases.get(name) ?? name;
@@ -248,7 +247,8 @@ export class MSGraphMCP {
       mcpSchema,
       async (args: Record<string, unknown>) => {
         const start = Date.now();
-        const argKeys = args && typeof args === "object" ? Object.keys(args) : [];
+        const argKeys =
+          args && typeof args === "object" ? Object.keys(args) : [];
         logger.info("Tool invoked", {
           tool: name,
           argKeys,
@@ -282,7 +282,11 @@ export class MSGraphMCP {
         } catch (e) {
           const duration = Date.now() - start;
           const msg = e instanceof Error ? e.message : String(e);
-          logger.error("Tool failed", { tool: name, durationMs: duration, error: msg });
+          logger.error("Tool failed", {
+            tool: name,
+            durationMs: duration,
+            error: msg,
+          });
           throw e;
         }
       }
@@ -305,7 +309,9 @@ export class MSGraphMCP {
       void this.server; // Trigger tool registration
     }
     const tools = Array.from(this.toolRegistry.values()).map((tool) => {
-      const jsonSchema = zodToJsonSchema(tool.inputSchema, { target: "jsonSchema7" });
+      const jsonSchema = zodToJsonSchema(tool.inputSchema, {
+        target: "jsonSchema7",
+      });
       // Ensure clean JSON Schema with type: "object"
       const cleanSchema = {
         type: "object",
@@ -363,8 +369,8 @@ export class MSGraphMCP {
       void this.server;
       // Server is now created and tools are registered
     }
-  const resolved = this.resolveToolName(toolName);
-  return this.toolRegistry.has(resolved);
+    const resolved = this.resolveToolName(toolName);
+    return this.toolRegistry.has(resolved);
   }
 
   /** Build and configure the McpServer with all tools */
@@ -574,7 +580,10 @@ export class MSGraphMCP {
         title: "Send Mail",
         description: "Send an email via Microsoft Graph",
         inputSchema: z.object({
-          to: z.string().email("Invalid email address").describe("Recipient email address"),
+          to: z
+            .string()
+            .email("Invalid email address")
+            .describe("Recipient email address"),
           subject: z.string().describe("Email subject"),
           body: z.string().describe("Email body"),
         }),
@@ -602,12 +611,18 @@ export class MSGraphMCP {
           startDateTime: z
             .string()
             .optional()
-            .refine((s) => !s || !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
+            .refine(
+              (s) => !s || !isNaN(Date.parse(s)),
+              "Invalid ISO 8601 date/time"
+            )
             .describe("Start date-time filter"),
           endDateTime: z
             .string()
             .optional()
-            .refine((s) => !s || !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
+            .refine(
+              (s) => !s || !isNaN(Date.parse(s)),
+              "Invalid ISO 8601 date/time"
+            )
             .describe("End date-time filter"),
         }),
       },
@@ -785,7 +800,10 @@ export class MSGraphMCP {
           startDateTime: z
             .string()
             .optional()
-            .refine((s) => !s || !isNaN(Date.parse(s)), "Invalid ISO 8601 date/time")
+            .refine(
+              (s) => !s || !isNaN(Date.parse(s)),
+              "Invalid ISO 8601 date/time"
+            )
             .optional()
             .describe(
               "Start date-time in ISO format to filter events from. Default: current time"
@@ -823,7 +841,7 @@ export class MSGraphMCP {
       }
     );
 
-  // Note: 'createCalendarEvent' has been consolidated to 'create-calendar-event' via alias.
+    // Note: 'createCalendarEvent' has been consolidated to 'create-calendar-event' via alias.
 
     // Search Files tool - Microsoft Graph Search API for files
     this.registerServerTool(
@@ -1102,19 +1120,19 @@ export class MSGraphMCP {
                     availabilityView:
                       (schedule.availabilityView as string[]) || [],
                     scheduleItems:
-                      (schedule.scheduleItems as Record<string, unknown>[])?.map(
-                        (item: Record<string, unknown>) => {
-                          const start = item.start as Record<string, unknown>;
-                          const end = item.end as Record<string, unknown>;
-                          return {
-                            start: (start?.dateTime as string) || "",
-                            end: (end?.dateTime as string) || "",
-                            busyType: (item.busyType as string) || "busy",
-                            subject: (item.subject as string) || undefined,
-                            location: (item.location as string) || undefined,
-                          };
-                        }
-                      ) || [],
+                      (
+                        schedule.scheduleItems as Record<string, unknown>[]
+                      )?.map((item: Record<string, unknown>) => {
+                        const start = item.start as Record<string, unknown>;
+                        const end = item.end as Record<string, unknown>;
+                        return {
+                          start: (start?.dateTime as string) || "",
+                          end: (end?.dateTime as string) || "",
+                          busyType: (item.busyType as string) || "busy",
+                          subject: (item.subject as string) || undefined,
+                          location: (item.location as string) || undefined,
+                        };
+                      }) || [],
                     workingHours: workingHours
                       ? {
                           daysOfWeek:
