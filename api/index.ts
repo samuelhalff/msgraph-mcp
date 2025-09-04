@@ -431,6 +431,14 @@ app.get(MCP_ENDPOINT, async (req: Request, res: Response) => {
     queryParams: req.query
   });
 
+  // Set SSE-friendly headers early to help intermediaries
+  try {
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Keep-Alive', 'timeout=600');
+    res.setHeader('X-Accel-Buffering', 'no');
+  } catch {}
+
   // Track connection state
   res.on('close', () => {
     const duration = Date.now() - startTime;
@@ -512,7 +520,7 @@ app.get("/health", (req: Request, res: Response) => {
 });
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info("🚀 Microsoft Graph MCP Server started successfully", {
     port: PORT,
     address: "0.0.0.0",
@@ -526,3 +534,25 @@ app.listen(PORT, () => {
   });
   console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
+
+// Tune server timeouts for SSE stability
+try {
+  // Node defaults: keepAliveTimeout 5s in some environments; increase for SSE
+  server.keepAliveTimeout = 120000; // 120s
+  // Must be greater than keepAliveTimeout + headers read time
+  server.headersTimeout = 130000; // 130s
+  // Disable per-request automatic timeouts (SSE is long-lived)
+  // 0 means no timeout for incoming requests
+  // @ts-ignore - requestTimeout may not be typed on some Node types
+  server.requestTimeout = 0;
+  logger.info('HTTP server timeouts configured for SSE', {
+    keepAliveTimeout: server.keepAliveTimeout,
+    headersTimeout: server.headersTimeout,
+    // @ts-ignore
+    requestTimeout: server.requestTimeout,
+  });
+} catch (e) {
+  logger.warn('Failed to adjust HTTP server timeouts', {
+    error: e instanceof Error ? e.message : String(e)
+  });
+}

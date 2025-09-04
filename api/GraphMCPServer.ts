@@ -204,7 +204,53 @@ export class GraphMCPServer {
       });
     });
 
+    // Set proxy-safe headers for SSE and disable buffering when possible
     try {
+      // Do not override Content-Type; transport will set it to text/event-stream
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Keep-Alive', 'timeout=600');
+      // Disable proxy buffering (nginx)
+      res.setHeader('X-Accel-Buffering', 'no');
+    } catch {}
+
+    // Heartbeat to keep idle connections alive through proxies (SSE comments are safe)
+    const HEARTBEAT_MS = 15000; // 15s
+    let heartbeat: NodeJS.Timeout | undefined;
+    const startHeartbeat = () => {
+      if (heartbeat) return;
+      logger.debug(`Starting SSE heartbeat for session ${sessionId}`, {
+        intervalMs: HEARTBEAT_MS
+      });
+      heartbeat = setInterval(() => {
+        if (res.writable && !res.writableEnded) {
+          try {
+            // SSE comment line; ignored by clients but keeps connection active
+            res.write(`: ping ${Date.now()}\n\n`);
+          } catch (e) {
+            logger.debug(`Heartbeat write failed for session ${sessionId}`, {
+              error: e instanceof Error ? e.message : String(e)
+            });
+          }
+        }
+      }, HEARTBEAT_MS);
+    };
+
+    const stopHeartbeat = () => {
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = undefined;
+        logger.debug(`Stopped SSE heartbeat for session ${sessionId}`);
+      }
+    };
+
+    // Ensure we stop heartbeat on connection end/error
+    res.once('close', stopHeartbeat);
+    res.once('error', stopHeartbeat);
+
+    try {
+      // Start heartbeat just before handing over to transport
+      startHeartbeat();
       await transport.handleRequest(req as any, res as any);
       logger.info(`SSE transport handling completed for session ${sessionId}`);
     } catch (error) {
@@ -214,6 +260,8 @@ export class GraphMCPServer {
         userAgent
       });
       throw error;
+    } finally {
+      stopHeartbeat();
     }
     return;
   }
