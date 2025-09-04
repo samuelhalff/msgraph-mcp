@@ -367,8 +367,9 @@ app.post("/token", async (req: Request, res: Response) => {
 
 // Microsoft Graph MCP endpoint with built-in auth logic
 // Set up MCP streamable HTTP using SDK example pattern
+let mcpServer
 try {
-const mcpServer = new GraphMCPServer(
+ mcpServer = new GraphMCPServer(
   new MCPServerCore(
     { name: "mcp-server", version: "1.0.0" },
     { capabilities: { tools: {}, logging: {} } }
