@@ -28,6 +28,12 @@ export class GraphMCPServer {
     this.setupHandlers();
   }
 
+  // Allow external router to update per-session auth context
+  public setSessionAuth(sessionId: string, accessToken: string) {
+    this.sessionAuth[sessionId] = { accessToken };
+    logger.info("Session auth updated", { sessionId, hasToken: !!accessToken });
+  }
+
   // Wire MCP request handlers to our MSGraphMCP tools
   private setupHandlers() {
     // initialize
