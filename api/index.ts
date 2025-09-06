@@ -1,16 +1,18 @@
 import express, { Request, Response } from "express";
+import { randomUUID } from "crypto";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { Server as MCPServerCore } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { GraphMCPServer } from "./GraphMCPServer.js";
-import { MSGraphMCP } from "./MSGraphMCP.js";
 import {
   exchangeCodeForToken,
   refreshAccessToken,
   getMicrosoftAuthEndpoint,
 } from "./lib/msgraph-auth.js";
 import logger from "./lib/logger.js";
-import { Env, MSGraphAuthContext } from "../types.js";
+import { Env } from "../types.js";
 
 // Store registered clients in memory (in production, use a database)
 interface RegisteredClient {
@@ -365,147 +367,81 @@ app.post("/token", async (req: Request, res: Response) => {
   }
 });
 
-// Microsoft Graph MCP endpoint with built-in auth logic
-
-// Set up MCP streamable HTTP using SDK example pattern
-const mcpServer = new GraphMCPServer(
+// Microsoft Graph MCP endpoint, aligned with the official minimal example
+const graphMcpServer = new GraphMCPServer(
   new MCPServerCore(
-    { name: "mcp-server", version: "1.0.0" },
+    { name: "msgraph-mcp", version: "1.0.0" },
     { capabilities: { tools: {}, logging: {} } }
   )
 );
+
+// Local transports map (backed by GraphMCPServer.transports)
+const transports: { [sessionId: string]: StreamableHTTPServerTransport } =
+  (graphMcpServer.transports as any);
+
 const MCP_ENDPOINT = "/mcp";
+
+// POST requests for client->server
 app.post(MCP_ENDPOINT, async (req: Request, res: Response) => {
-  const startTime = Date.now();
-  const sessionId = req.headers['mcp-session-id'];
-  const userAgent = req.headers['user-agent'];
-  const origin = req.headers['origin'];
-  const contentLength = req.headers['content-length'];
-  
-  logger.info("MCP POST request received", {
-    sessionId: sessionId || "none",
-    userAgent,
-    origin,
-    contentLength,
-    ip: req.ip || req.connection?.remoteAddress,
-    url: req.url,
-    hasBody: !!req.body,
-    bodyType: typeof req.body,
-    contentType: req.headers['content-type']
-  });
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  const authHeader = req.header("Authorization");
+  const bearer = authHeader?.startsWith("Bearer ")
+    ? authHeader.slice(7)
+    : undefined;
 
-  try {
-    await mcpServer.handlePostRequest(req, res);
-    const duration = Date.now() - startTime;
-    logger.info("MCP POST completed", {
-      sessionId: sessionId || "none",
-      duration: `${duration}ms`,
-      statusCode: res.statusCode
+  let transport: StreamableHTTPServerTransport;
+
+  if (sessionId && transports[sessionId]) {
+    // Reuse existing transport
+    transport = transports[sessionId];
+    if (bearer) graphMcpServer.setSessionAuth(sessionId, bearer);
+  } else if (!sessionId && isInitializeRequest(req.body)) {
+    // New init request
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sid) => {
+        transports[sid] = transport;
+        if (bearer) graphMcpServer.setSessionAuth(sid, bearer);
+      },
+      // enableDnsRebindingProtection: true,
+      // allowedHosts: ['127.0.0.1'],
     });
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    logger.error("MCP POST failed", {
-      sessionId: sessionId || "none",
-      duration: `${duration}ms`,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
+    (transport as any).onclose = () => {
+      const sid = (transport as any).sessionId as string | undefined;
+      if (sid) delete transports[sid];
+    };
+
+    await graphMcpServer.server.connect(transport);
+  } else {
+    res.status(400).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Bad Request: No valid session ID provided",
+      },
+      id: null,
     });
-    throw error;
+    return;
   }
+
+  await transport.handleRequest(req as any, res as any, req.body);
 });
 
-app.get(MCP_ENDPOINT, async (req: Request, res: Response) => {
-  const startTime = Date.now();
-  const sessionId = req.headers['mcp-session-id'];
-  const userAgent = req.headers['user-agent'];
-  const origin = req.headers['origin'];
-  const acceptHeader = req.headers['accept'];
-  
-  logger.info("MCP GET (SSE) request received", {
-    sessionId: sessionId || "none",
-    userAgent,
-    origin,
-    acceptHeader,
-    ip: req.ip || req.connection?.remoteAddress,
-    url: req.url,
-    queryParams: req.query
-  });
-
-  // Set SSE-friendly headers early to help intermediaries
-  try {
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('Keep-Alive', 'timeout=600');
-    res.setHeader('X-Accel-Buffering', 'no');
-  } catch {}
-
-  // Track connection state
-  res.on('close', () => {
-    const duration = Date.now() - startTime;
-    logger.info("MCP GET connection closed", {
-      sessionId: sessionId || "none",
-      duration: `${duration}ms`,
-      reason: 'client_disconnect'
-    });
-  });
-
-  res.on('error', (error) => {
-    const duration = Date.now() - startTime;
-    logger.error("MCP GET connection error", {
-      sessionId: sessionId || "none",
-      duration: `${duration}ms`,
-      error: error.message,
-      stack: error.stack
-    });
-  });
-
-  try {
-    await mcpServer.handleGetRequest(req, res);
-    const duration = Date.now() - startTime;
-    logger.info("MCP GET completed", {
-      sessionId: sessionId || "none",
-      duration: `${duration}ms`,
-      statusCode: res.statusCode
-    });
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    logger.error("MCP GET failed", {
-      sessionId: sessionId || "none",
-      duration: `${duration}ms`,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
-    });
-    throw error;
+// Reusable handler for GET and DELETE
+const handleSessionRequest = async (req: Request, res: Response) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (!sessionId || !transports[sessionId]) {
+    res.status(400).send("Invalid or missing session ID");
+    return;
   }
-});
+  const transport = transports[sessionId];
+  await transport.handleRequest(req as any, res as any);
+};
 
-// Prewarm: register tools at startup to avoid first-request latency
-try {
-  const prewarmEnv: Env = {
-    TENANT_ID: process.env.TENANT_ID,
-    CLIENT_ID: process.env.CLIENT_ID,
-    CLIENT_SECRET: process.env.CLIENT_SECRET,
-    REDIRECT_URI: process.env.REDIRECT_URI,
-    AUTH_BASE_URL: process.env.AUTH_BASE_URL,
-    GRAPH_BASE_URL: process.env.GRAPH_BASE_URL,
-    USE_CLIENT_TOKEN: process.env.USE_CLIENT_TOKEN,
-    USE_CERTIFICATE: process.env.USE_CERTIFICATE,
-    USE_INTERACTIVE: process.env.USE_INTERACTIVE,
-    USE_GRAPH_BETA: process.env.USE_GRAPH_BETA,
-    CERTIFICATE_PATH: process.env.CERTIFICATE_PATH,
-    CERTIFICATE_PASSWORD: process.env.CERTIFICATE_PASSWORD,
-    SCOPES: process.env.SCOPES,
-    PORT: process.env.PORT,
-    ACCESS_TOKEN: "",
-  } as Env;
-  const prewarmMcp = new MSGraphMCP(prewarmEnv, { accessToken: "" });
-  const tools = prewarmMcp.getAvailableTools();
-  logger.info("Prewarmed MCP tool registry", { count: tools.length });
-} catch (err) {
-  logger.warn("Tool prewarm failed (continuing)", {
-    error: err instanceof Error ? err.message : String(err),
-  });
-}
+app.get(MCP_ENDPOINT, handleSessionRequest);
+app.delete(MCP_ENDPOINT, handleSessionRequest);
+
+// Prewarm removed to follow the minimal example; tools are registered per-session on initialize.
 
 // Health check endpoint
 app.get("/", (req: Request, res: Response) => {

@@ -271,6 +271,56 @@ msgraph:
     discovery_url: http://msgraph-mcp:3001/.well-known/oauth-authorization-server
 ```
 
+## 🧰 SSE/Proxy Hardening (Important)
+
+Server-Sent Events (SSE) require special reverse proxy settings. If you see errors like "SSE stream disconnected: terminated", "fetch failed", or "operation was aborted", ensure the following:
+
+- Do not buffer SSE responses.
+- Increase read/idle timeouts beyond 60s.
+- Preserve Accept headers and the custom `mcp-session-id` header between POST/GET.
+- Disable compression for SSE.
+
+Example Nginx config:
+
+```nginx
+location /mcp {
+  proxy_pass http://msgraph-mcp:3001;
+
+  # Required for SSE
+  proxy_http_version 1.1;
+  proxy_set_header Connection '';
+  proxy_buffering off;
+  gzip off;
+  chunked_transfer_encoding on;
+  add_header X-Accel-Buffering no;
+
+  # Timeouts (tune as needed)
+  proxy_read_timeout 600s;
+  proxy_send_timeout 600s;
+
+  # Forward important headers
+  proxy_set_header Accept $http_accept;
+  proxy_set_header mcp-session-id $http_mcp_session_id;
+}
+```
+
+Example Traefik labels:
+
+```yaml
+labels:
+  - "traefik.http.services.msgraph-mcp.loadbalancer.server.port=3001"
+  - "traefik.http.routers.msgraph-mcp.rule=Host(`your-host`) && PathPrefix(`/`)"
+  - "traefik.http.routers.msgraph-mcp.entrypoints=websecure"
+  - "traefik.http.middlewares.msgraph-sse.headers.customresponseheaders.X-Accel-Buffering=no"
+  - "traefik.http.middlewares.msgraph-sse.headers.customresponseheaders.Cache-Control=no-cache, no-transform"
+  - "traefik.http.routers.msgraph-mcp.middlewares=msgraph-sse"
+```
+
+Notes:
+- Some stacks have issues with SSE over HTTP/2. If disconnects persist, try `http2 off;` for the SSE location.
+- This server sets `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, `Keep-Alive: timeout=600`, and `X-Accel-Buffering: no` on GET /mcp.
+- The server also emits heartbeat comments every ~15s to keep the connection alive through intermediaries.
+
 ## 📊 Logging
 
 The server provides comprehensive logging:
