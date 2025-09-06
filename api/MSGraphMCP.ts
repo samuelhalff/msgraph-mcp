@@ -317,11 +317,14 @@ export class MSGraphMCP {
       throw new Error(`Tool '${name}' not found`);
     }
 
-    // Validate input if we have schema
+    // Normalize args for client compatibility (LibreChat aliases, coercions)
+    const normalizedArgs = this.normalizeArgs(resolved, args);
+
+    // Validate input if we have schema (validate normalized)
     const toolInfo = this.toolRegistry.get(resolved);
     if (toolInfo?.inputSchema) {
       try {
-        const parseResult = toolInfo.inputSchema.safeParse(args);
+        const parseResult = toolInfo.inputSchema.safeParse(normalizedArgs);
         if (!parseResult.success) {
           const validationErrors = parseResult.error.errors.map(err => ({
             path: err.path.join('.'),
@@ -332,7 +335,7 @@ export class MSGraphMCP {
           logger.warn("Tool input validation failed", {
             toolName: resolved,
             errors: validationErrors,
-            inputArgs: args,
+            inputArgs: normalizedArgs,
             duration: `${Date.now() - startTime}ms`
           });
           
@@ -347,7 +350,7 @@ export class MSGraphMCP {
         logger.warn("Tool input validation error", {
           toolName: resolved,
           error: validationError instanceof Error ? validationError.message : String(validationError),
-          inputArgs: args
+          inputArgs: normalizedArgs
         });
       }
     }
@@ -358,7 +361,7 @@ export class MSGraphMCP {
         hasAuth: !!this.auth.accessToken
       });
       
-      const result = await handler(args);
+      const result = await handler(normalizedArgs);
       const duration = Date.now() - startTime;
       
       logger.info("Tool execution completed", {
@@ -378,10 +381,107 @@ export class MSGraphMCP {
         duration: `${duration}ms`,
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
-        inputArgs: args
+        inputArgs: normalizedArgs
       });
       throw error;
     }
+  }
+
+  /** Normalize incoming args for common aliases and coercions across tools */
+  private normalizeArgs(toolName: string, args: Record<string, unknown>) {
+    const a: any = { ...(args || {}) };
+
+    const coerceNumber = (v: unknown): number | undefined => {
+      if (v === undefined || v === null) return undefined;
+      if (typeof v === "number") return v;
+      const n = Number(v);
+      return isNaN(n) ? undefined : n;
+    };
+
+    switch (toolName) {
+      case "send-mail": {
+        // Accept toRecipients (array) or comma-separated to
+        if (!a.to && Array.isArray(a.toRecipients) && a.toRecipients.length) {
+          a.to = a.toRecipients[0];
+        }
+        if (!a.to && typeof a.toRecipients === "string") {
+          const first = (a.toRecipients as string).split(/[,;\s]+/).filter(Boolean)[0];
+          if (first) a.to = first;
+        }
+        if (!a.to && typeof a.to === "string" && a.to.includes(",")) {
+          a.to = (a.to as string).split(/[,;\s]+/).filter(Boolean)[0];
+        }
+        break;
+      }
+      case "create-calendar-event": {
+        // Allow startTime/endTime; attendee -> attendees; isOnline -> isOnlineMeeting
+        if (!a.start && a.startTime) a.start = a.startTime;
+        if (!a.end && a.endTime) a.end = a.endTime;
+        if (!a.attendees && a.attendee) a.attendees = [a.attendee];
+        if (a.attendees && typeof a.attendees === "string") {
+          a.attendees = (a.attendees as string).split(/[,;\s]+/).filter(Boolean);
+        }
+        if (a.isOnline !== undefined && a.isOnlineMeeting === undefined) {
+          a.isOnlineMeeting = !!a.isOnline;
+        }
+        break;
+      }
+      case "get-schedule": {
+        // Aliases: emails -> schedules; start/end; interval
+        if (!a.schedules && Array.isArray(a.emails)) a.schedules = a.emails;
+        if (!a.startTime && a.start) a.startTime = a.start;
+        if (!a.endTime && a.end) a.endTime = a.end;
+        if (a.interval !== undefined && a.availabilityViewInterval === undefined) {
+          a.availabilityViewInterval = coerceNumber(a.interval);
+        }
+        // Coerce interval to number if string
+        if (typeof a.availabilityViewInterval === "string") {
+          a.availabilityViewInterval = coerceNumber(a.availabilityViewInterval);
+        }
+        break;
+      }
+      case "search-files": {
+        // Aliases: q -> query; skip -> from; pageSize -> size
+        if (!a.query && a.q) a.query = a.q;
+        if (a.skip !== undefined && a.from === undefined) a.from = a.skip;
+        if (a.pageSize !== undefined && a.size === undefined) a.size = a.pageSize;
+        a.size = coerceNumber(a.size) ?? a.size;
+        a.from = coerceNumber(a.from) ?? a.from;
+        break;
+      }
+      case "list-calendar-events": {
+        if (!a.startDateTime && a.start) a.startDateTime = a.start;
+        if (!a.endDateTime && a.end) a.endDateTime = a.end;
+        break;
+      }
+      case "createDraftEmail": {
+        // Support 'to'/'cc'/'bcc' strings as aliases
+        if (a.to && !a.toRecipients) {
+          a.toRecipients = Array.isArray(a.to) ? a.to : String(a.to).split(/[,;\s]+/).filter(Boolean);
+        }
+        if (a.cc && !a.ccRecipients) {
+          a.ccRecipients = Array.isArray(a.cc) ? a.cc : String(a.cc).split(/[,;\s]+/).filter(Boolean);
+        }
+        if (a.bcc && !a.bccRecipients) {
+          a.bccRecipients = Array.isArray(a.bcc) ? a.bcc : String(a.bcc).split(/[,;\s]+/).filter(Boolean);
+        }
+        break;
+      }
+      case "microsoft-graph-api": {
+        // url -> path, uppercase/normalize method, coerce fetchAll
+        if (!a.path && a.url) a.path = a.url;
+        if (a.method && typeof a.method === "string") {
+          a.method = String(a.method).toLowerCase();
+        }
+        if (typeof a.fetchAll === "string") {
+          a.fetchAll = ["1", "true", "yes"].includes(String(a.fetchAll).toLowerCase());
+        }
+        break;
+      }
+    }
+
+    logger.debug("Normalized args", { toolName, originalKeys: Object.keys(args || {}), normalizedKeys: Object.keys(a) });
+    return a;
   }
 
   /** Get list of available tools from our registry */
@@ -394,13 +494,89 @@ export class MSGraphMCP {
         target: "jsonSchema7",
       });
       // Ensure clean JSON Schema with type: "object"
-      const cleanSchema = {
+      const cleanSchema: any = {
         type: "object",
         properties: (jsonSchema as any).properties || {},
         required: (jsonSchema as any).required || [],
         // Relax to true to improve client compatibility (e.g., LibreChat) when extra fields are sent
         additionalProperties: true,
       };
+
+      // Augment schemas with friendly aliases and anyOf requirements for better client compatibility (LibreChat)
+      try {
+        switch (tool.name) {
+          case "send-mail": {
+            // Allow toRecipients[] as an alternative to to
+            cleanSchema.properties.toRecipients = {
+              type: "array",
+              items: { type: "string", format: "email" },
+              description: "Alternate: array of recipient email addresses",
+            };
+            // Either 'to' or 'toRecipients' must be present
+            cleanSchema.required = [];
+            cleanSchema.anyOf = [
+              { required: ["to", "subject", "body"] },
+              { required: ["toRecipients", "subject", "body"] },
+            ];
+            break;
+          }
+          case "create-calendar-event": {
+            cleanSchema.properties.startTime = { type: "string", description: "Alias for 'start' (ISO 8601)" };
+            cleanSchema.properties.endTime = { type: "string", description: "Alias for 'end' (ISO 8601)" };
+            cleanSchema.properties.attendee = { type: "string", format: "email", description: "Alias for a single attendee" };
+            cleanSchema.properties.isOnline = { type: "boolean", description: "Alias for isOnlineMeeting" };
+            // Make only subject globally required, and require either (start & end) or (startTime & endTime)
+            cleanSchema.required = ["subject"];
+            cleanSchema.allOf = [
+              { anyOf: [{ required: ["start"] }, { required: ["startTime"] }] },
+              { anyOf: [{ required: ["end"] }, { required: ["endTime"] }] },
+            ];
+            break;
+          }
+          case "get-schedule": {
+            cleanSchema.properties.emails = { type: "array", items: { type: "string", format: "email" }, description: "Alias for 'schedules'" };
+            cleanSchema.properties.start = { type: "string", description: "Alias for 'startTime' (ISO 8601)" };
+            cleanSchema.properties.end = { type: "string", description: "Alias for 'endTime' (ISO 8601)" };
+            cleanSchema.properties.interval = { type: "number", description: "Alias for 'availabilityViewInterval'" };
+            // Require schedules|emails, start|startTime, end|endTime
+            cleanSchema.required = [];
+            cleanSchema.allOf = [
+              { anyOf: [{ required: ["schedules"] }, { required: ["emails"] }] },
+              { anyOf: [{ required: ["startTime"] }, { required: ["start"] }] },
+              { anyOf: [{ required: ["endTime"] }, { required: ["end"] }] },
+            ];
+            break;
+          }
+          case "search-files": {
+            cleanSchema.properties.q = { type: "string", description: "Alias for 'query'" };
+            cleanSchema.properties.skip = { type: ["integer", "string"], description: "Alias for 'from' (offset)" };
+            cleanSchema.properties.pageSize = { type: ["integer", "string"], description: "Alias for 'size'" };
+            cleanSchema.required = [];
+            cleanSchema.anyOf = [
+              { required: ["query"] },
+              { required: ["q"] },
+            ];
+            break;
+          }
+          case "list-calendar-events": {
+            cleanSchema.properties.start = { type: "string", description: "Alias for 'startDateTime' (ISO 8601)" };
+            cleanSchema.properties.end = { type: "string", description: "Alias for 'endDateTime' (ISO 8601)" };
+            break;
+          }
+          case "createDraftEmail": {
+            cleanSchema.properties.to = { type: ["string", "array"], items: { type: "string" }, description: "Alias for toRecipients (string or array)" };
+            cleanSchema.properties.cc = { type: ["string", "array"], items: { type: "string" }, description: "Alias for ccRecipients" };
+            cleanSchema.properties.bcc = { type: ["string", "array"], items: { type: "string" }, description: "Alias for bccRecipients" };
+            break;
+          }
+          case "microsoft-graph-api": {
+            cleanSchema.properties.url = { type: "string", description: "Alias for 'path'" };
+            break;
+          }
+        }
+      } catch (e) {
+        logger.warn("Schema augmentation failed", { tool: tool.name, error: e instanceof Error ? e.message : String(e) });
+      }
       return {
         name: tool.name,
         description: tool.description,
