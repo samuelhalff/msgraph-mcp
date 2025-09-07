@@ -9,7 +9,7 @@ import { logger } from "../utils/logger.ts";
 
 const log = logger("oauth");
 
-// Lazy MSAL initialization to avoid server crash when env vars are missing
+// Lazy MSAL initialization
 let msalInstance: ConfidentialClientApplication | null = null;
 function getMsalInstance(): ConfidentialClientApplication {
   if (msalInstance) return msalInstance;
@@ -28,175 +28,116 @@ function getMsalInstance(): ConfidentialClientApplication {
     throw new Error(`MSAL configuration missing: ${missing.join(", ")}`);
   }
 
-  const msalConfig = {
-    auth: {
-      clientId,
-      authority: `https://login.microsoftonline.com/${tenantId}`,
-      clientSecret,
-    },
-  };
-  msalInstance = new ConfidentialClientApplication(msalConfig);
+  msalInstance = new ConfidentialClientApplication({
+    auth: { clientId, authority: `https://login.microsoftonline.com/${tenantId}`, clientSecret },
+  });
   log.info("MSAL client initialized");
   return msalInstance;
 }
 
 function getScopes(): string[] {
-  const s = (process.env.OAUTH_SCOPES || "openid profile email User.Read").split(
-    " "
-  );
+  const s = (process.env.OAUTH_SCOPES || "openid profile email User.Read").split(" ");
   log.debug("Using OAuth scopes", { scopes: s });
   return s;
 }
 
-// Store state for OAuth flow
+// In-memory state map
 const oauthStates = new Map<string, { sessionId: string; redirectUri: string }>();
 
 export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
-  // OAuth authorization endpoint
+  // Step 1: Redirect to Azure login
   app.get("/oauth/authorize", async (req: Request, res: Response) => {
     try {
       const sessionId =
         (req.headers["mcp-session-id"] as string) ||
         (req.query.session_id as string) ||
         "";
-      const redirectUri =
-        (req.query.redirect_uri as string) || process.env.OAUTH_REDIRECT_URI!;
+      const redirectUri = (req.query.redirect_uri as string) || process.env.OAUTH_REDIRECT_URI!;
 
-      log.info("OAuth authorize request", {
-        sessionId,
-        hasRedirectUri: !!redirectUri,
-        requestId: (req as any).requestId,
-      });
-
+      log.info("OAuth authorize request", { sessionId, requestId: (req as any).requestId });
       if (!sessionId) {
-        return res
-          .status(400)
-          .json({ error: "Missing mcp-session-id header or session_id param" });
+        return res.status(400).json({ error: "Missing mcp-session-id or session_id" });
       }
 
       const state = uuidv4();
       oauthStates.set(state, { sessionId, redirectUri });
 
-      const msal = getMsalInstance();
-      const authUrl = await msal.getAuthCodeUrl({
+      const authUrl = await getMsalInstance().getAuthCodeUrl({
         scopes: getScopes(),
         redirectUri,
         state,
         responseMode: "query",
       });
 
-      log.info("Redirecting to OAuth authorization", {
-        sessionId,
-        state,
-        redirectUri,
-        urlLen: authUrl.length,
-      });
       res.redirect(authUrl);
-    } catch (error: any) {
-      log.error("OAuth authorize error", error);
-      res.status(500).json({
-        error: "OAuth authorization failed",
-        detail: error.message,
-      });
+    } catch (err: any) {
+      log.error("OAuth authorize error", err);
+      res.status(500).json({ error: "OAuth authorization failed", detail: err.message });
     }
   });
 
-  // OAuth callback endpoint
+  // Step 2: Handle callback and store tokens
   app.get("/oauth/callback", async (req: Request, res: Response) => {
     try {
-      const {
-        code,
-        state: rawState,
-        error,
-        error_description,
-      } = req.query as Record<string, string>;
+      const { code, state: rawState, error, error_description } =
+        req.query as Record<string, string>;
 
       if (error) {
-        log.error("OAuth callback provider error", { error, error_description });
-        return res.status(400).json({
-          error: "OAuth error",
-          description: error_description,
-        });
+        return res.status(400).json({ error: "OAuth error", description: error_description });
       }
-
       if (!code || !rawState) {
-        return res
-          .status(400)
-          .json({ error: "Missing authorization code or state" });
+        return res.status(400).json({ error: "Missing code or state" });
       }
 
-      // LibreChat appends “:<serverName>” to state
+      // LibreChat appends ":<serverName>" to the state
       const [state] = rawState.split(":", 2);
-
-      log.info("OAuth callback received", {
-        hasCode: true,
-        hasState: !!state,
-      });
-
       const stateData = oauthStates.get(state);
       if (!stateData) {
         return res.status(400).json({ error: "Invalid state parameter" });
       }
       oauthStates.delete(state);
 
-      const msal = getMsalInstance();
-      const tokenRequest: AuthorizationCodeRequest = {
+      const tokenResponse = await getMsalInstance().acquireTokenByCode({
         code,
         scopes: getScopes(),
         redirectUri: stateData.redirectUri,
-      };
-      const tokenResponse = await msal.acquireTokenByCode(tokenRequest);
+      } as AuthorizationCodeRequest);
 
       if (!tokenResponse.accessToken) {
         throw new Error("No access token received");
       }
 
-      // Store full token set under the original sessionId
-      const refreshToken = (tokenResponse as any).refreshToken;
+      // Extract refreshToken via any-cast
+      const maybeRefresh = (tokenResponse as any).refreshToken as string | undefined;
+
       await tokenManager.storeToken(stateData.sessionId, {
         accessToken: tokenResponse.accessToken,
         expiresAt: tokenResponse.expiresOn!.getTime(),
-        ...(refreshToken && { refreshToken }),
+        ...(maybeRefresh && { refreshToken: maybeRefresh }),
       });
 
       log.info("OAuth tokens stored", { sessionId: stateData.sessionId });
-
       res.json({ success: true, message: "Authentication successful" });
-    } catch (error: any) {
-      log.error("OAuth callback error", error);
-      res.status(500).json({
-        error: "OAuth callback failed",
-        detail: error.message,
-      });
+    } catch (err: any) {
+      log.error("OAuth callback error", err);
+      res.status(500).json({ error: "OAuth callback failed", detail: err.message });
     }
   });
 
-  // Token status endpoint (keyed by sessionId)
+  // Status check
   app.get("/oauth/status/:sessionId", async (req: Request, res: Response) => {
     try {
       const { sessionId } = req.params;
-      log.info("OAuth status check", { sessionId });
       const tokenData = await tokenManager.getToken(sessionId);
-
-      if (!tokenData) {
-        log.debug("No token data for session", { sessionId });
-        return res.json({ authenticated: false });
-      }
-
-      const isExpired = tokenManager.isTokenExpired(tokenData);
-      log.debug("Token status", { sessionId, isExpired });
+      if (!tokenData) return res.json({ authenticated: false });
 
       res.json({
-        authenticated: !isExpired,
+        authenticated: !tokenManager.isTokenExpired(tokenData),
         hasRefreshToken: !!tokenData.refreshToken,
         expiresAt: tokenData.expiresAt,
       });
-    } catch (error: any) {
-      log.error("Token status error", error);
-      res.status(500).json({
-        error: "Failed to check token status",
-        detail: error.message,
-      });
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to check token status", detail: err.message });
     }
   });
 }
