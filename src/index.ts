@@ -117,7 +117,10 @@ function getSessionContext(req: express.Request) {
       "Missing mcp-session-id header"
     );
   }
-  log.debug("Session resolved", { sessionId, requestId: (req as any).requestId });
+  log.debug("Session resolved", {
+    sessionId,
+    requestId: (req as any).requestId,
+  });
   return { sessionId };
 }
 
@@ -261,7 +264,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request: any) => {
 setupOAuthRoutes(app, tokenManager);
 
 // MCP endpoint handler
-app.all("/mcp", async (req, res) => {
+app.post("/mcp", async (req, res) => {
   try {
     const { sessionId } = getSessionContext(req);
     log.info("/mcp request", {
@@ -277,7 +280,7 @@ app.all("/mcp", async (req, res) => {
       found: !!tokenData,
       expired: tokenData ? tokenManager.isTokenExpired(tokenData) : undefined,
     });
-    if (!tokenData || tokenManager.isTokenExpired(tokenData)) {
+    if (!sessionId || !tokenData || tokenManager.isTokenExpired(tokenData)) {
       // Return 401 to trigger LibreChat's OAuth flow
       res.setHeader(
         "WWW-Authenticate",
@@ -306,7 +309,6 @@ app.all("/mcp", async (req, res) => {
     }
 
     await server.connect(transport);
-    await transport.handleRequest(req as any, res as any);
     log.info(`MCP connection established for session: ${sessionId}`);
   } catch (error) {
     log.error("MCP connection error:", error);
