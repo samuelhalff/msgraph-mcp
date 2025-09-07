@@ -57,8 +57,7 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
     try {
       // Use only mcp-session-id (header preferred, query fallback)
       const sessionId =
-        (req.headers["mcp-session-id"] as string) ||
-        (req.query.session_id as string);
+        (req.headers["mcp-session-id"] as string) || (req.headers["X-User-ID"] as string) || (req.query.session_id as string);
       const redirectUri =
         (req.query.redirect_uri as string) || process.env.OAUTH_REDIRECT_URI!;
       log.info("OAuth authorize request", {
@@ -70,7 +69,7 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
       if (!sessionId) {
         return res
           .status(400)
-          .json({ error: "Missing mcp-session-id header or session_id param" });
+          .json({ error: "Missing mcp-session-id header, X-User-ID or session_id param" });
       }
 
       const state = uuidv4();
