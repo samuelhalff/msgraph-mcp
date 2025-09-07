@@ -1,6 +1,10 @@
+import RedisDefault from "ioredis";
 import { logger } from "../utils/logger.ts";
 
 const log = logger("tokenManager");
+// Initialize Redis client once
+const Redis = (RedisDefault as any).default || RedisDefault;
+const redis = new Redis(process.env.REDIS_URL!);
 
 export interface TokenData {
   accessToken: string;
@@ -9,45 +13,40 @@ export interface TokenData {
 }
 
 export class TokenManager {
-  private tokens = new Map<string, TokenData>();
+  private prefix = "mcp:token:";
 
+  /** Persist tokens in Redis under mcp:token:<sessionId> */
   async storeToken(key: string, tokenData: TokenData): Promise<void> {
-    log.info(`Storing token for key: ${key}`);
-    this.tokens.set(key, tokenData);
-    // Dump entire map after storing
-    log.info("Current tokens map:", Array.from(this.tokens.entries()));
+    log.info(`Storing token in Redis for key: ${key}`);
+    await redis.set(this.prefix + key, JSON.stringify(tokenData));
   }
 
+  /** Retrieve tokens from Redis */
   async getToken(key: string): Promise<TokenData | null> {
-    log.info(`Getting token for key: ${key}`);
-    log.info(
-      `Token for key ${key} ${this.tokens.has(key) ? "exists" : "not found"}`
-    );
-    // Dump entire map on every lookup
-    log.info("Current tokens map:", Array.from(this.tokens.entries()));
-    return this.tokens.get(key) || null;
+    log.info(`Fetching token from Redis for key: ${key}`);
+    const json = await redis.get(this.prefix + key);
+    if (!json) {
+      log.info(`No token found in Redis for key: ${key}`);
+      return null;
+    }
+    try {
+      const data = JSON.parse(json) as TokenData;
+      log.info(`Token retrieved for key: ${key}`, { expiresAt: data.expiresAt });
+      return data;
+    } catch (err: any) {
+      log.error("Error parsing token JSON from Redis", err);
+      return null;
+    }
   }
 
+  /** Remove tokens from Redis */
   async removeToken(key: string): Promise<void> {
-    log.info(`Removing token for key: ${key}`);
-    this.tokens.delete(key);
-    log.info("Current tokens map:", Array.from(this.tokens.entries()));
+    log.info(`Removing token from Redis for key: ${key}`);
+    await redis.del(this.prefix + key);
   }
 
+  /** Check expiry */
   isTokenExpired(tokenData: TokenData): boolean {
     return Date.now() >= tokenData.expiresAt;
-  }
-
-  async refreshToken(_key: string, _refreshToken: string): Promise<never> {
-    log.info(`Refresh requested but not implemented`);
-    throw new Error("Token refresh not implemented - please re-authenticate");
-  }
-
-  public dumpTokens(): void {
-    const entries = Array.from(this.tokens.entries()).map(([k, v]) => ({
-      sessionId: k,
-      expiresAt: v.expiresAt,
-    }));
-    log.info("All stored tokens:", entries);
   }
 }
