@@ -6,6 +6,10 @@ const log = logger("tokenManager");
 const Redis = (RedisDefault as any).default || RedisDefault;
 const redis = new Redis(process.env.REDIS_URL!);
 
+redis.on("error", (err: Error) => {
+  console.error("[ioredis] Error event:", err.message);
+});
+
 export interface TokenData {
   accessToken: string;
   refreshToken?: string;
