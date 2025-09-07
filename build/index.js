@@ -1,6 +1,5 @@
 import express from "express";
 import cors from "cors";
-import { randomUUID } from "crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListToolsRequestSchema, CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ErrorCode, McpError, } from "@modelcontextprotocol/sdk/types.js";
@@ -13,373 +12,142 @@ import { logger } from "./utils/logger.js";
 dotenv.config();
 const app = express();
 const log = logger("main");
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-// CORS middleware (configure appropriately for production)
-app.use(cors({
-    origin: process.env.BASE_URL || "*",
-    methods: ["GET", "POST", "OPTIONS", "DELETE"],
-    exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
-    allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id", "Mcp-Session-Id"],
-}));
-// Health check endpoint
-app.get("/health", (req, res) => {
-    res.json({ status: "ok", timestamp: new Date().toISOString() });
-});
-// OAuth Protected Resource metadata (RFC 9728-style)
-app.get("/.well-known/oauth-protected-resource", (req, res) => {
-    res.json({
-        resource: `http://msgraph-mcp:${process.env.PORT || 3000}`,
-        authorization_servers: [
-            `https://login.microsoftonline.com/${process.env.TENANT_ID}/v2.0`,
-        ],
-        scopes_supported: ["User.Read", "Mail.Read", "Calendars.Read", "Files.Read"],
-        bearer_methods_supported: ["header"],
-    });
-});
-// Well-known endpoint for MCP server discovery
-app.get("/mcp/.well-known", (req, res) => {
-    res.json({
-        name: "msgraph-mcp-server",
-        version: "1.0.0",
-        description: "Microsoft Graph MCP Server with OAuth2 support",
-        capabilities: {
-            tools: {},
-            resources: {},
-        },
-        oauth: {
-            authorization_url: "/oauth/authorize",
-            callback_url: "/oauth/callback",
-            token_url: "/oauth/token",
-        },
-        transports: ["streamable-http"],
-    });
-});
-// Initialize token manager and graph tools
-const tokenManager = new TokenManager();
-const graphTools = new GraphTools();
-// Create MCP server instance
-const server = new Server({
-    name: "msgraph-mcp-server",
-    version: "1.0.0",
-}, {
-    capabilities: {
-        tools: {},
-        resources: {},
-    },
-});
-// Per-session transport maps
-const transports = new Map();
-const pendingTransports = new Map();
-// Session inactivity cleanup
-const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
-const sessionTimers = new Map();
-function resetSessionTimer(sessionId) {
-    const existing = sessionTimers.get(sessionId);
-    if (existing)
-        clearTimeout(existing);
-    const timer = setTimeout(() => {
-        const t = transports.get(sessionId);
-        try {
-            t?.close?.();
-        }
-        catch (e) {
-            // ignore close errors
-        }
-        transports.delete(sessionId);
-        sessionTimers.delete(sessionId);
-        log.info(`Session ${sessionId} expired due to inactivity`);
-    }, SESSION_TIMEOUT);
-    sessionTimers.set(sessionId, timer);
-}
-function markSessionActiveDuringRequest(sessionId, res) {
-    // Pause any existing timer while the request is being processed
-    const existing = sessionTimers.get(sessionId);
-    if (existing)
-        clearTimeout(existing);
-    const done = () => resetSessionTimer(sessionId);
-    res.once("finish", done);
-    res.once("close", done);
-}
-function getSessionId(req) {
-    return req.headers["mcp-session-id"] ||
-        req.headers["Mcp-Session-Id"];
-}
-function getHeaderSessionId(req) {
-    const h = getSessionId(req);
-    if (!h)
-        return undefined;
-    return Array.isArray(h) ? h[0] : h;
-}
-async function createAndConnectTransport(sessionId) {
-    if (transports.has(sessionId)) {
-        return transports.get(sessionId);
-    }
-    const existingPending = pendingTransports.get(sessionId);
-    if (existingPending)
-        return existingPending;
-    const promise = (async () => {
-        try {
-            const t = new StreamableHTTPServerTransport({
-                // Ensure the SDK uses this exact id for the session
-                sessionIdGenerator: () => sessionId,
-            });
-            // Explicitly assign the sessionId for consistent lookup
-            t.sessionId = sessionId;
-            // Cleanup on close
-            t.onclose = () => {
-                transports.delete(sessionId);
-                const existing = sessionTimers.get(sessionId);
-                if (existing)
-                    clearTimeout(existing);
-                sessionTimers.delete(sessionId);
-            };
-            await server.connect(t);
-            transports.set(sessionId, t);
-            pendingTransports.delete(sessionId);
-            resetSessionTimer(sessionId);
-            return t;
-        }
-        catch (error) {
-            pendingTransports.delete(sessionId);
-            throw error;
-        }
-    })();
-    pendingTransports.set(sessionId, promise);
-    return promise;
-}
-// Helper to read session id from the standard MCP header
-function getSessionContext(req) {
-    const sessionId = req.headers["mcp-session-id"];
-    if (!sessionId) {
-        throw new McpError(ErrorCode.InvalidRequest, "Missing mcp-session-id header");
-    }
-    return { sessionId };
-}
-function extractRequestContext(params) {
-    if (params && typeof params === "object") {
-        const p = params;
-        return p._meta?.context;
-    }
-    return undefined;
-}
-// Helper function to get access token for a session
 async function getAccessTokenForSession(sessionId) {
     const tokenData = await tokenManager.getToken(sessionId);
     if (!tokenData) {
-        throw new McpError(ErrorCode.InvalidRequest, "User not authenticated. Please authenticate first.");
+        throw new McpError(ErrorCode.InvalidRequest, "User not authenticated");
     }
     if (tokenManager.isTokenExpired(tokenData)) {
         if (!tokenData.refreshToken) {
-            throw new McpError(ErrorCode.InvalidRequest, "Token expired and no refresh token available. Please re-authenticate.");
+            throw new McpError(ErrorCode.InvalidRequest, "Please re-authenticate");
         }
         await tokenManager.refreshToken(sessionId, tokenData.refreshToken);
-        const latest = await tokenManager.getToken(sessionId);
-        if (!latest) {
-            throw new McpError(ErrorCode.InvalidRequest, "Token refresh failed. Please re-authenticate.");
-        }
-        return latest.accessToken;
     }
-    return tokenData.accessToken;
+    // fetch latest data after potential refresh
+    const latest = await tokenManager.getToken(sessionId);
+    if (!latest) {
+        throw new McpError(ErrorCode.InvalidRequest, "Re-authentication required");
+    }
+    return latest.accessToken;
 }
-// MCP endpoint handlers (Streamable HTTP)
-app.post("/mcp", async (req, res) => {
-    const body = req.body;
-    const id = body && typeof body === "object" && body.id !== undefined
-        ? body.id
-        : null;
-    const method = body && typeof body === "object" ? body.method : undefined;
-    try {
-        const headerId = getHeaderSessionId(req);
-        const isInitialize = method === "initialize";
-        let effectiveSessionId;
-        let transport;
-        if (isInitialize) {
-            // Prefer client-provided session id (LibreChat sends userId). Otherwise generate one.
-            effectiveSessionId = headerId || randomUUID();
-            transport = await createAndConnectTransport(effectiveSessionId);
-            // Echo the session id for clients per spec
-            res.setHeader("Mcp-Session-Id", effectiveSessionId);
-            // Mark active during this request to avoid mid-stream timeout
-            markSessionActiveDuringRequest(effectiveSessionId, res);
-        }
-        else {
-            if (!headerId || !transports.get(headerId)) {
-                return res.status(404).json({
-                    jsonrpc: "2.0",
-                    error: {
-                        code: ErrorCode.InvalidRequest,
-                        message: "Session not found or expired",
-                    },
-                    id,
-                });
-            }
-            effectiveSessionId = headerId;
-            transport = transports.get(effectiveSessionId);
-            res.setHeader("Mcp-Session-Id", effectiveSessionId);
-            // Mark active during this request to avoid mid-stream timeout
-            markSessionActiveDuringRequest(effectiveSessionId, res);
-        }
-        // Attach session context to params._meta for supported methods (not initialize)
-        if (!isInitialize && body && typeof body === "object") {
-            const attachContext = (msg) => {
-                if (msg && typeof msg === "object") {
-                    msg.params = msg.params || {};
-                    const existingMeta = msg.params["_meta"] || {};
-                    msg.params["_meta"] = {
-                        ...existingMeta,
-                        context: { sessionId: effectiveSessionId },
-                    };
-                }
-            };
-            if (Array.isArray(body)) {
-                body.forEach(attachContext);
-            }
-            else {
-                attachContext(body);
-            }
-        }
-        await transport.handleRequest(req, res, body);
-        log.info(`MCP connection established for session: ${effectiveSessionId}`);
+// Middleware
+app.use(express.json());
+app.use(cors({
+    origin: process.env.BASE_URL || "*",
+    methods: ["GET", "POST", "OPTIONS"],
+    exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
+    allowedHeaders: ["Content-Type", "Authorization", "Mcp-Session-Id"],
+}));
+// Health & discovery endpoints
+app.get("/health", (_, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
+app.get("/.well-known/oauth-protected-resource", (_, res) => res.json({
+    resource: `https://pbm-ai.ddns.net:${process.env.PORT}`,
+    authorization_servers: [
+        `https://login.microsoftonline.com/${process.env.TENANT_ID}/v2.0`,
+    ],
+    scopes_supported: [
+        "User.Read",
+        "Mail.Read",
+        "Calendars.Read",
+        "Files.Read",
+    ],
+    bearer_methods_supported: ["header"],
+}));
+app.get("/mcp/.well-known", (_, res) => res.json({
+    name: "msgraph-mcp-server",
+    version: "1.0.0",
+    description: "Microsoft Graph MCP Server with OAuth2 support",
+    transports: ["streamable-http"],
+}));
+// OAuth routes
+const tokenManager = new TokenManager();
+setupOAuthRoutes(app, tokenManager);
+// MCP SDK server and tools
+const server = new Server({ name: "msgraph-mcp-server", version: "1.0.0" }, { capabilities: { tools: {}, resources: {} } });
+const graphTools = new GraphTools();
+// Utility: extract session ID header or throw
+function getSessionId(req) {
+    const sid = req.header("Mcp-Session-Id");
+    if (!sid) {
+        throw new McpError(ErrorCode.InvalidRequest, "Missing Mcp-Session-Id header");
     }
-    catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        log.error("MCP POST error:", err);
-        if (!res.headersSent) {
-            res.status(400).json({
-                jsonrpc: "2.0",
-                error: { code: -32000, message: `Bad Request: ${err.message}` },
-                id,
-            });
-        }
-    }
+    return sid;
+}
+// Main MCP endpoint – one long-lived HTTP POST per session
+app.post("/mcp", (req, res) => {
+    // Do NOT call res.json or res.end – keep the response open
+    const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => getSessionId(req),
+    });
+    server.connect(transport).catch((err) => {
+        log.error("MCP connect error:", err);
+        // Do not close res here; SDK will handle errors in-stream
+    });
 });
-app.delete("/mcp", async (req, res) => {
+// Register MCP handlers
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: graphTools.getToolDefinitions(),
+}));
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const req = extra.req;
+    const sessionId = getSessionId(req);
+    const accessToken = await getAccessTokenForSession(sessionId);
+    const service = new GraphService(accessToken);
     try {
-        const headerId = getHeaderSessionId(req);
-        if (!headerId || !transports.has(headerId)) {
-            return res.status(404).json({ error: "Session not found" });
-        }
-        const t = transports.get(headerId);
-        try {
-            t?.close?.();
-        }
-        catch (e) {
-            // ignore close errors
-        }
-        transports.delete(headerId);
-        const existing = sessionTimers.get(headerId);
-        if (existing)
-            clearTimeout(existing);
-        sessionTimers.delete(headerId);
-        res.status(204).end();
-    }
-    catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        log.error("MCP DELETE error:", err);
-        res.status(500).json({ error: "Failed to delete session" });
-    }
-});
-// List available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-    log.info("Listing tools");
-    return { tools: graphTools.getToolDefinitions() };
-});
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    log.info(`Calling tool: ${name}`, args);
-    // Get user context from request metadata (if available)
-    const context = extractRequestContext(request.params);
-    if (!context?.sessionId) {
-        throw new McpError(ErrorCode.InvalidRequest, "Missing session context");
-    }
-    try {
-        const accessToken = await getAccessTokenForSession(context.sessionId);
-        const graphService = new GraphService(accessToken);
-        const result = await graphTools.executeTool(name, args || {}, graphService);
+        const result = await graphTools.executeTool(request.params.name, request.params.arguments || {}, service);
         return {
-            content: [
-                {
-                    type: "text",
-                    text: JSON.stringify(result, null, 2),
-                },
-            ],
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         };
     }
-    catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        log.error("Tool execution error:", err);
-        throw new McpError(ErrorCode.InternalError, `Tool execution failed: ${err.message}`);
+    catch (err) {
+        log.error("Tool error:", err);
+        throw new McpError(ErrorCode.InternalError, err.message);
     }
 });
-server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    log.info("Listing resources");
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+        {
+            uri: "graph://user/profile",
+            name: "User Profile",
+            description: "Current user profile information",
+            mimeType: "application/json",
+        },
+        {
+            uri: "graph://user/mail",
+            name: "User Mail",
+            description: "User email messages",
+            mimeType: "application/json",
+        },
+    ],
+}));
+server.setRequestHandler(ReadResourceRequestSchema, async (request, extra) => {
+    const req = extra.req;
+    const sessionId = getSessionId(req);
+    const accessToken = await getAccessTokenForSession(sessionId);
+    const service = new GraphService(accessToken);
+    let data;
+    switch (request.params.uri) {
+        case "graph://user/profile":
+            data = await service.getUserProfile();
+            break;
+        case "graph://user/mail":
+            data = await service.getMessages();
+            break;
+        default:
+            throw new McpError(ErrorCode.InvalidRequest, `Unknown resource ${request.params.uri}`);
+    }
     return {
-        resources: [
+        contents: [
             {
-                uri: "graph://user/profile",
-                name: "User Profile",
-                description: "Current user profile information",
+                uri: request.params.uri,
                 mimeType: "application/json",
-            },
-            {
-                uri: "graph://user/mail",
-                name: "User Mail",
-                description: "User email messages",
-                mimeType: "application/json",
+                text: JSON.stringify(data, null, 2),
             },
         ],
     };
 });
-server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const { uri } = request.params;
-    log.info(`Reading resource: ${uri}`);
-    const context = extractRequestContext(request.params);
-    if (!context?.sessionId) {
-        throw new McpError(ErrorCode.InvalidRequest, "Missing session context");
-    }
-    try {
-        const accessToken = await getAccessTokenForSession(context.sessionId);
-        const graphService = new GraphService(accessToken);
-        let data;
-        switch (uri) {
-            case "graph://user/profile":
-                data = await graphService.getUserProfile();
-                break;
-            case "graph://user/mail":
-                data = await graphService.getMessages();
-                break;
-            default:
-                throw new McpError(ErrorCode.InvalidRequest, `Unknown resource: ${uri}`);
-        }
-        return {
-            contents: [
-                {
-                    uri,
-                    mimeType: "application/json",
-                    text: JSON.stringify(data, null, 2),
-                },
-            ],
-        };
-    }
-    catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        log.error("Resource read error:", err);
-        throw new McpError(ErrorCode.InternalError, `Resource read failed: ${err.message}`);
-    }
-});
-// Setup OAuth routes
-setupOAuthRoutes(app, tokenManager);
-const port = process.env.PORT || 3000;
+// Start server
+const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => {
-    log.info(`Microsoft Graph MCP Server running on port ${port}`);
-    log.info(`Health check: http://localhost:${port}/health`);
-    log.info(`MCP endpoint: http://localhost:${port}/mcp`);
-    log.info(`OAuth authorize: http://localhost:${port}/oauth/authorize`);
-});
-// Graceful shutdown
-process.on("SIGINT", () => {
-    log.info("Shutting down server...");
-    process.exit(0);
+    log.info(`MCP server listening on port ${port}`);
 });

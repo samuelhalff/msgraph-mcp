@@ -22,6 +22,25 @@ dotenv.config();
 const app = express();
 const log = logger("main");
 
+async function getAccessTokenForSession(sessionId: string): Promise<string> {
+  const tokenData = await tokenManager.getToken(sessionId);
+  if (!tokenData) {
+    throw new McpError(ErrorCode.InvalidRequest, "User not authenticated");
+  }
+  if (tokenManager.isTokenExpired(tokenData)) {
+    if (!tokenData.refreshToken) {
+      throw new McpError(ErrorCode.InvalidRequest, "Please re-authenticate");
+    }
+    await tokenManager.refreshToken(sessionId, tokenData.refreshToken);
+  }
+  // fetch latest data after potential refresh
+  const latest = await tokenManager.getToken(sessionId);
+  if (!latest) {
+    throw new McpError(ErrorCode.InvalidRequest, "Re-authentication required");
+  }
+  return latest.accessToken;
+}
+
 // Middleware
 app.use(express.json());
 app.use(
@@ -44,7 +63,12 @@ app.get("/.well-known/oauth-protected-resource", (_, res) =>
     authorization_servers: [
       `https://login.microsoftonline.com/${process.env.TENANT_ID}/v2.0`,
     ],
-    scopes_supported: ["User.Read", "Mail.Read", "Calendars.Read", "Files.Read"],
+    scopes_supported: [
+      "User.Read",
+      "Mail.Read",
+      "Calendars.Read",
+      "Files.Read",
+    ],
     bearer_methods_supported: ["header"],
   })
 );
@@ -73,7 +97,10 @@ const graphTools = new GraphTools();
 function getSessionId(req: express.Request): string {
   const sid = req.header("Mcp-Session-Id");
   if (!sid) {
-    throw new McpError(ErrorCode.InvalidRequest, "Missing Mcp-Session-Id header");
+    throw new McpError(
+      ErrorCode.InvalidRequest,
+      "Missing Mcp-Session-Id header"
+    );
   }
   return sid;
 }
@@ -81,8 +108,10 @@ function getSessionId(req: express.Request): string {
 // Main MCP endpoint – one long-lived HTTP POST per session
 app.post("/mcp", (req, res) => {
   // Do NOT call res.json or res.end – keep the response open
-  const transport = new StreamableHTTPServerTransport(req, res);
-  server.connect(transport, { req }).catch((err) => {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => getSessionId(req),
+  });
+  server.connect(transport).catch((err) => {
     log.error("MCP connect error:", err);
     // Do not close res here; SDK will handle errors in-stream
   });
@@ -93,14 +122,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: graphTools.getToolDefinitions(),
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request, { req }) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra: any) => {
+  const req = extra.req;
   const sessionId = getSessionId(req);
-  const tokenData = await tokenManager.getToken(sessionId);
-  if (!tokenData) {
-    throw new McpError(ErrorCode.InvalidRequest, "User not authenticated");
-  }
-  const token = await tokenManager.ensureValidToken(sessionId, tokenData);
-  const service = new GraphService(token);
+  const accessToken = await getAccessTokenForSession(sessionId);
+  const service = new GraphService(accessToken);
 
   try {
     const result = await graphTools.executeTool(
@@ -133,38 +159,40 @@ server.setRequestHandler(ListResourcesRequestSchema, async () => ({
     },
   ],
 }));
+server.setRequestHandler(
+  ReadResourceRequestSchema,
+  async (request, extra: any) => {
+    const req = extra.req;
+    const sessionId = getSessionId(req);
+    const accessToken = await getAccessTokenForSession(sessionId);
+    const service = new GraphService(accessToken);
 
-server.setRequestHandler(ReadResourceRequestSchema, async (request, { req }) => {
-  const sessionId = getSessionId(req);
-  const tokenData = await tokenManager.getToken(sessionId);
-  if (!tokenData) {
-    throw new McpError(ErrorCode.InvalidRequest, "User not authenticated");
+    let data;
+    switch (request.params.uri) {
+      case "graph://user/profile":
+        data = await service.getUserProfile();
+        break;
+      case "graph://user/mail":
+        data = await service.getMessages();
+        break;
+      default:
+        throw new McpError(
+          ErrorCode.InvalidRequest,
+          `Unknown resource ${request.params.uri}`
+        );
+    }
+
+    return {
+      contents: [
+        {
+          uri: request.params.uri,
+          mimeType: "application/json",
+          text: JSON.stringify(data, null, 2),
+        },
+      ],
+    };
   }
-  const token = await tokenManager.ensureValidToken(sessionId, tokenData);
-  const service = new GraphService(token);
-
-  let data;
-  switch (request.params.uri) {
-    case "graph://user/profile":
-      data = await service.getUserProfile();
-      break;
-    case "graph://user/mail":
-      data = await service.getMessages();
-      break;
-    default:
-      throw new McpError(ErrorCode.InvalidRequest, `Unknown resource ${request.params.uri}`);
-  }
-
-  return {
-    contents: [
-      {
-        uri: request.params.uri,
-        mimeType: "application/json",
-        text: JSON.stringify(data, null, 2),
-      },
-    ],
-  };
-});
+);
 
 // Start server
 const port = Number(process.env.PORT) || 3000;
