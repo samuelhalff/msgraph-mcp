@@ -60,6 +60,7 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
       }
 
       const state = uuidv4();
+      log.debug("Generated OAuth state", { state, sessionId, redirectUri });
       oauthStates.set(state, { sessionId, redirectUri });
 
       const authUrl = await getMsalInstance().getAuthCodeUrl({
@@ -82,16 +83,22 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
       const { code, state: rawState, error, error_description } =
         req.query as Record<string, string>;
 
+      log.debug("OAuth callback query params", { code: !!code, rawState, error, error_description });
+
       if (error) {
+        log.error("OAuth callback provider error", { error, error_description });
         return res.status(400).json({ error: "OAuth error", description: error_description });
       }
       if (!code || !rawState) {
         return res.status(400).json({ error: "Missing code or state" });
       }
 
-      // LibreChat appends ":<serverName>" to the state
-      const [state] = rawState.split(":", 2);
+      // LibreChat appends “:<serverName>” to state
+      const [state, serverName] = rawState.split(":", 2);
+      log.debug("Parsed state from rawState", { state, serverName });
+
       const stateData = oauthStates.get(state);
+      log.debug("Lookup oauthStates", { state, found: !!stateData });
       if (!stateData) {
         return res.status(400).json({ error: "Invalid state parameter" });
       }
@@ -107,14 +114,14 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
         throw new Error("No access token received");
       }
 
-      // Extract refreshToken via any-cast
       const maybeRefresh = (tokenResponse as any).refreshToken as string | undefined;
-
-      await tokenManager.storeToken(stateData.sessionId, {
+      const tokenData = {
         accessToken: tokenResponse.accessToken,
         expiresAt: tokenResponse.expiresOn!.getTime(),
         ...(maybeRefresh && { refreshToken: maybeRefresh }),
-      });
+      };
+      log.debug("Storing tokenData", { sessionId: stateData.sessionId, tokenData });
+      await tokenManager.storeToken(stateData.sessionId, tokenData);
 
       log.info("OAuth tokens stored", { sessionId: stateData.sessionId });
       res.json({ success: true, message: "Authentication successful" });
