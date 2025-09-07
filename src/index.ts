@@ -274,8 +274,6 @@ app.post("/mcp", async (req, res) => {
       requestId: (req as any).requestId,
     });
 
-    tokenManager.dumpTokens();
-
     const tokenData = await tokenManager.getToken(sessionId);
     log.debug("Token lookup", {
       sessionId,
