@@ -9,7 +9,7 @@ const log = logger('oauth');
 const scopes = (process.env.OAUTH_SCOPES || 'openid profile email User.Read').split(' ');
 
 // Store state for OAuth flow
-const oauthStates = new Map<string, { userId: string; redirectUri: string }>();
+const oauthStates = new Map<string, { sessionId: string; redirectUri: string }>();
 
 export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
   const clientId = process.env.CLIENT_ID;
@@ -37,15 +37,16 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
       if (!oauthEnabled || !msalInstance) {
         return res.status(503).json({ error: 'OAUTH_NOT_CONFIGURED', message: 'Missing CLIENT_ID, TENANT_ID, or CLIENT_SECRET' });
       }
-      const userId = req.query.user_id as string || req.headers['x-librechat-user-id'] as string;
+      // Use MCP-standard header for session identification
+      const sessionId = (req.headers['mcp-session-id'] as string) || (req.query.session_id as string);
       const redirectUri = req.query.redirect_uri as string || process.env.OAUTH_REDIRECT_URI!;
       
-      if (!userId) {
-        return res.status(400).json({ error: 'Missing user_id parameter or header' });
+      if (!sessionId) {
+        return res.status(400).json({ error: 'Missing mcp-session-id header or session_id query parameter' });
       }
 
       const state = uuidv4();
-      oauthStates.set(state, { userId, redirectUri });
+      oauthStates.set(state, { sessionId, redirectUri });
 
   const authUrl = await msalInstance.getAuthCodeUrl({
         scopes,
@@ -54,7 +55,7 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
         responseMode: 'query'
       });
 
-      log.info(`Redirecting user ${userId} to OAuth authorization`);
+  log.info(`Redirecting session ${sessionId} to OAuth authorization`);
       res.redirect(authUrl);
     } catch (error) {
       log.error('OAuth authorize error:', error);
@@ -89,7 +90,7 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
       if (!oauthEnabled || !msalInstance) {
         return res.status(503).json({ error: 'OAUTH_NOT_CONFIGURED', message: 'Missing CLIENT_ID, TENANT_ID, or CLIENT_SECRET' });
       }
-      const tokenResponse: AuthenticationResult = await msalInstance.acquireTokenByCode({
+  const tokenResponse: AuthenticationResult = await msalInstance.acquireTokenByCode({
         code: code as string,
         scopes,
         redirectUri: stateData.redirectUri
@@ -100,18 +101,18 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
       }
 
       // Store tokens (MSAL's acquireTokenByCode rarely returns a refresh token; omit if not provided)
-      await tokenManager.storeToken(stateData.userId, {
+      await tokenManager.storeToken(stateData.sessionId, {
         accessToken: tokenResponse.accessToken,
         expiresAt: tokenResponse.expiresOn ? tokenResponse.expiresOn.getTime() : (Date.now() + 3600_000),
         scope: tokenResponse.scopes?.join(' ')
       });
-
-      log.info(`OAuth tokens stored for user: ${stateData.userId}`);
+      
+      log.info(`OAuth tokens stored for session: ${stateData.sessionId}`);
       
       res.json({
         success: true,
         message: 'Authentication successful',
-        userId: stateData.userId
+        sessionId: stateData.sessionId
       });
     } catch (error) {
       log.error('OAuth callback error:', error);
@@ -119,11 +120,11 @@ export function setupOAuthRoutes(app: Express, tokenManager: TokenManager) {
     }
   });
 
-  // Token status endpoint
-  app.get('/oauth/status/:userId', async (req: Request, res: Response) => {
+  // Token status endpoint (by session)
+  app.get('/oauth/status/:sessionId', async (req: Request, res: Response) => {
     try {
-      const { userId } = req.params;
-      const tokenData = await tokenManager.getToken(userId);
+      const { sessionId } = req.params as { sessionId: string };
+      const tokenData = await tokenManager.getToken(sessionId);
       
       if (!tokenData) {
         return res.json({ authenticated: false });

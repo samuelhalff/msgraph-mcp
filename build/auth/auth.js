@@ -30,20 +30,21 @@ export function setupOAuthRoutes(app, tokenManager) {
             if (!oauthEnabled || !msalInstance) {
                 return res.status(503).json({ error: 'OAUTH_NOT_CONFIGURED', message: 'Missing CLIENT_ID, TENANT_ID, or CLIENT_SECRET' });
             }
-            const userId = req.query.user_id || req.headers['x-librechat-user-id'];
+            // Use MCP-standard header for session identification
+            const sessionId = req.headers['mcp-session-id'] || req.query.session_id;
             const redirectUri = req.query.redirect_uri || process.env.OAUTH_REDIRECT_URI;
-            if (!userId) {
-                return res.status(400).json({ error: 'Missing user_id parameter or header' });
+            if (!sessionId) {
+                return res.status(400).json({ error: 'Missing mcp-session-id header or session_id query parameter' });
             }
             const state = uuidv4();
-            oauthStates.set(state, { userId, redirectUri });
+            oauthStates.set(state, { sessionId, redirectUri });
             const authUrl = await msalInstance.getAuthCodeUrl({
                 scopes,
                 redirectUri,
                 state,
                 responseMode: 'query'
             });
-            log.info(`Redirecting user ${userId} to OAuth authorization`);
+            log.info(`Redirecting session ${sessionId} to OAuth authorization`);
             res.redirect(authUrl);
         }
         catch (error) {
@@ -82,16 +83,16 @@ export function setupOAuthRoutes(app, tokenManager) {
                 throw new Error('No access token received');
             }
             // Store tokens (MSAL's acquireTokenByCode rarely returns a refresh token; omit if not provided)
-            await tokenManager.storeToken(stateData.userId, {
+            await tokenManager.storeToken(stateData.sessionId, {
                 accessToken: tokenResponse.accessToken,
                 expiresAt: tokenResponse.expiresOn ? tokenResponse.expiresOn.getTime() : (Date.now() + 3600_000),
                 scope: tokenResponse.scopes?.join(' ')
             });
-            log.info(`OAuth tokens stored for user: ${stateData.userId}`);
+            log.info(`OAuth tokens stored for session: ${stateData.sessionId}`);
             res.json({
                 success: true,
                 message: 'Authentication successful',
-                userId: stateData.userId
+                sessionId: stateData.sessionId
             });
         }
         catch (error) {
@@ -99,11 +100,11 @@ export function setupOAuthRoutes(app, tokenManager) {
             res.status(500).json({ error: 'OAuth callback failed' });
         }
     });
-    // Token status endpoint
-    app.get('/oauth/status/:userId', async (req, res) => {
+    // Token status endpoint (by session)
+    app.get('/oauth/status/:sessionId', async (req, res) => {
         try {
-            const { userId } = req.params;
-            const tokenData = await tokenManager.getToken(userId);
+            const { sessionId } = req.params;
+            const tokenData = await tokenManager.getToken(sessionId);
             if (!tokenData) {
                 return res.json({ authenticated: false });
             }
