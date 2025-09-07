@@ -1,18 +1,18 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-  "module": "NodeNext",
+    "module": "NodeNext",
   "moduleResolution": "NodeNext",
+  "allowImportingTsExtensions": true,
     "outDir": "./build",
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    
-  "declaration": false,
-  "emitDeclarationOnly": false,
-  "noEmit": false
+    "declaration": false,
+    "emitDeclarationOnly": false,
+  "noEmit": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "build"]

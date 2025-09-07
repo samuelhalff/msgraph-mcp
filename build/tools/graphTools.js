@@ -100,25 +100,17 @@ export class GraphTools {
             case 'get_user_profile':
                 return await graphService.getUserProfile();
             case 'get_messages':
-                {
-                    const top = typeof args.top === 'number' ? args.top : 10;
-                    const messageCount = Math.min(top, 50);
-                    return await graphService.getMessages(messageCount);
-                }
+                const messageCount = Math.min(args.top || 10, 50);
+                return await graphService.getMessages(messageCount);
             case 'get_calendar_events':
-                {
-                    const top = typeof args.top === 'number' ? args.top : 10;
-                    const eventCount = Math.min(top, 50);
-                    return await graphService.getEvents(eventCount);
-                }
+                const eventCount = Math.min(args.top || 10, 50);
+                return await graphService.getEvents(eventCount);
             case 'send_email':
-                await graphService.sendMail(String(args.subject ?? ''), String(args.content ?? ''), Array.isArray(args.to) ? args.to : []);
+                await graphService.sendMail(args.subject, args.content, args.to);
                 return { success: true, message: 'Email sent successfully' };
             case 'create_calendar_event':
-                {
-                    const event = await graphService.createCalendarEvent(String(args.subject ?? ''), String(args.start ?? ''), String(args.end ?? ''), Array.isArray(args.attendees) ? args.attendees : []);
-                    return { success: true, event };
-                }
+                const event = await graphService.createCalendarEvent(args.subject, args.start, args.end, args.attendees);
+                return { success: true, event };
             default:
                 throw new Error(`Unknown tool: ${toolName}`);
         }

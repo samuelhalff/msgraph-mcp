@@ -1,6 +1,6 @@
 import axios from 'axios';
-import { GraphUser, GraphMessage, GraphEvent } from '../types.js';
-import { logger } from '../utils/logger.js';
+import type { GraphUser, GraphMessage, GraphEvent } from '../types.d.ts';
+import { logger } from '../utils/logger.ts';
 
 const log = logger('graphService');
 
@@ -20,19 +20,19 @@ export class GraphService {
   async getUserProfile(): Promise<GraphUser> {
     log.info('Fetching user profile');
     const response = await this.client.get('/me');
-  return response.data as GraphUser;
+    return response.data;
   }
 
   async getMessages(top: number = 10): Promise<GraphMessage[]> {
     log.info(`Fetching top ${top} messages`);
     const response = await this.client.get(`/me/messages?$top=${top}&$select=id,subject,from,receivedDateTime,bodyPreview`);
-  return (response.data as { value: GraphMessage[] }).value;
+    return response.data.value;
   }
 
   async getEvents(top: number = 10): Promise<GraphEvent[]> {
     log.info(`Fetching top ${top} calendar events`);
     const response = await this.client.get(`/me/events?$top=${top}&$select=id,subject,start,end,organizer`);
-  return (response.data as { value: GraphEvent[] }).value;
+    return response.data.value;
   }
 
   async sendMail(subject: string, content: string, toRecipients: string[]): Promise<void> {
@@ -71,7 +71,7 @@ export class GraphService {
       })) || []
     };
 
-  const response = await this.client.post('/me/events', event);
-  return response.data as GraphEvent;
+    const response = await this.client.post('/me/events', event);
+    return response.data;
   }
 }

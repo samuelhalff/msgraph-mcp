@@ -1,4 +1,4 @@
-import { GraphService } from '../services/graphService';
+import { GraphService } from '../services/graphService.js';
 export declare class GraphTools {
     getToolDefinitions(): ({
         name: string;

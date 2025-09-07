@@ -2,35 +2,36 @@
 	"name": "msgraph-mcp-server",
 	"version": "1.0.0",
 	"description": "Microsoft Graph MCP Server for LibreChat with OAuth2 support",
-	"type": "module",
 	"main": "build/index.js",
+	"type": "module",
 	"scripts": {
 		"build": "tsc",
-		"start": "node build/index.js",
-		"dev": "nodemon --watch src --exec \"tsc && node build/index.js\"",
-		"lint": "eslint \"src/**/*.ts\"",
-		"lint:fix": "eslint \"src/**/*.ts\" --fix"
+		"start": "tsx src/index.ts",
+		"lint": "eslint .",
+		"dev": "tsx watch src/index.ts",
+		"lint:fix": "eslint . --fix"
 	},
 	"dependencies": {
-		"@azure/msal-node": "^3.7.3",
-		"@modelcontextprotocol/sdk": "^1.17.5",
+		"@azure/msal-node": "^2.16.3",
+		"@modelcontextprotocol/sdk": "^1.0.0",
 		"axios": "^1.11.0",
 		"cors": "^2.8.5",
 		"dotenv": "^16.3.1",
 		"express": "^4.18.2",
+		"tsx": "^4.19.2",
 		"uuid": "^9.0.0",
 		"zod": "^3.22.4"
 	},
 	"devDependencies": {
-		"@types/cors": "^2.8.13",
-		"@types/express": "^4.17.17",
-		"@types/node": "^20.4.2",
-		"@types/uuid": "^10.0.0",
-		"eslint": "^8.43.0",
-		"eslint-config-prettier": "^9.0.0",
-		"eslint-plugin-prettier": "^5.1.3",
-		"nodemon": "^3.1.10",
-		"prettier": "^3.0.3",
-		"typescript": "^5.1.6"
+		"@eslint/js": "^9.35.0",
+		"@types/axios": "^0.9.36",
+		"@types/cors": "^2.8.19",
+		"@types/express": "^4.17.21",
+		"@types/node": "^20.0.0",
+		"@types/uuid": "^9.0.0",
+		"eslint": "^9.35.0",
+		"globals": "^15.15.0",
+		"typescript": "^5.0.0",
+		"typescript-eslint": "^8.42.0"
 	}
 }
