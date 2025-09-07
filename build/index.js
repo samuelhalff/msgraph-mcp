@@ -193,10 +193,11 @@ app.all("/mcp", async (req, res) => {
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
         });
-        // Add user context to request metadata
+        // Add user context to request metadata using MCP-compliant _meta
         if (req.method === "POST" && req.body && typeof req.body === "object") {
-            req.body.meta = {
-                ...req.body.meta,
+            // Ensure _meta exists and attach context
+            req.body._meta = {
+                ...(req.body._meta || {}),
                 context: { sessionId },
             };
         }
