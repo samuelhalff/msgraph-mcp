@@ -10,6 +10,7 @@ import {
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
+import { v4 as uuidv4 } from "uuid";
 import { setupOAuthRoutes } from "./auth/auth.ts";
 import { GraphTools } from "./tools/graphTools.ts";
 import { TokenManager } from "./auth/tokenManager.ts";
@@ -25,6 +26,34 @@ const log = logger("main");
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Basic request logger (safe headers only)
+app.use((req, res, next) => {
+  const requestId = uuidv4();
+  (req as any).requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  const safeHeaders = {
+    "mcp-session-id": req.headers["mcp-session-id"],
+    "content-type": req.headers["content-type"],
+    accept: req.headers["accept"],
+    "user-agent": req.headers["user-agent"],
+  };
+  log.info("REQ", {
+    id: requestId,
+    method: req.method,
+    url: req.originalUrl,
+    headers: safeHeaders,
+    query: req.query,
+  });
+
+  res.on("finish", () => {
+    log.info("RES", {
+      id: requestId,
+      statusCode: res.statusCode,
+    });
+  });
+  next();
+});
+
 // CORS middleware
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -37,11 +66,13 @@ app.use((req, res, next) => {
 
 // Health check endpoint
 app.get("/health", (req, res) => {
+  log.debug("Health check ping");
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
 // Well-known endpoint for MCP server discovery
 app.get("/mcp/.well-known", (req, res) => {
+  log.debug("Serving MCP discovery metadata");
   res.json({
     name: "msgraph-mcp-server",
     version: "1.0.0",
@@ -86,6 +117,7 @@ function getSessionContext(req: express.Request) {
       "Missing mcp-session-id header"
     );
   }
+  log.debug("Session resolved", { sessionId, requestId: (req as any).requestId });
   return { sessionId };
 }
 
@@ -232,14 +264,26 @@ setupOAuthRoutes(app, tokenManager);
 app.all("/mcp", async (req, res) => {
   try {
     const { sessionId } = getSessionContext(req);
+    log.info("/mcp request", {
+      sessionId,
+      method: req.method,
+      accept: req.headers["accept"],
+      requestId: (req as any).requestId,
+    });
 
     const tokenData = await tokenManager.getToken(sessionId);
+    log.debug("Token lookup", {
+      sessionId,
+      found: !!tokenData,
+      expired: tokenData ? tokenManager.isTokenExpired(tokenData) : undefined,
+    });
     if (!tokenData || tokenManager.isTokenExpired(tokenData)) {
       // Return 401 to trigger LibreChat's OAuth flow
       res.setHeader(
         "WWW-Authenticate",
         `Bearer resource_metadata="${process.env.BASE_URL}/.well-known/oauth-protected-resource"`
       );
+      log.warn("Authentication required", { sessionId });
       return res.status(401).json({
         error: "authentication_required",
         error_description: "OAuth authentication required",
@@ -253,14 +297,16 @@ app.all("/mcp", async (req, res) => {
 
     // Add session context to request metadata (no userId)
     if (req.method === "POST" && req.body) {
+      const rpcMethod = (req.body && req.body.method) || "unknown";
+      log.info("Injecting MCP meta context", { sessionId, rpcMethod });
       req.body.meta = {
         ...req.body.meta,
         context: { sessionId },
       };
     }
 
-  await server.connect(transport);
-  await transport.handleRequest(req as any, res as any);
+    await server.connect(transport);
+    await transport.handleRequest(req as any, res as any);
     log.info(`MCP connection established for session: ${sessionId}`);
   } catch (error) {
     log.error("MCP connection error:", error);
