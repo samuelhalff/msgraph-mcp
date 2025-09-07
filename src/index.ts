@@ -35,10 +35,9 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: process.env.BASE_URL || "*",
-    // origin: ['https://your-remote-domain.com', 'https://your-other-remote-domain.com'],
     methods: ["GET", "POST", "OPTIONS"],
-  exposedHeaders: ["mcp-session-id"],
-  allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id"],
+    exposedHeaders: ["mcp-session-id"],
+    allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id"],
   })
 );
 
@@ -272,14 +271,26 @@ app.all("/mcp", async (req, res) => {
       sessionIdGenerator: () => randomUUID(),
     });
 
-    // Add user context to request metadata using MCP-compliant _meta
-    if (req.method === "POST" && req.body && typeof req.body === "object") {
-      // Ensure _meta exists and attach context
-      req.body._meta = {
-        ...(req.body._meta || {}),
-        context: { sessionId },
-      };
-    }
+      // Add session context to request params under _meta per MCP conventions
+      if (req.method === "POST" && req.body && typeof req.body === "object") {
+        // Some clients send batched requests; handle both single and array forms
+        const attachContext = (msg: any) => {
+          if (msg && typeof msg === "object") {
+            msg.params = msg.params || {};
+            const existingMeta = (msg.params as any)["_meta"] || {};
+            (msg.params as any)["_meta"] = {
+              ...existingMeta,
+              context: { sessionId },
+            };
+          }
+        };
+
+        if (Array.isArray(req.body)) {
+          req.body.forEach(attachContext);
+        } else {
+          attachContext(req.body);
+        }
+      }
 
     await server.connect(transport);
     // Hand off the HTTP request to the transport per Streamable HTTP pattern
