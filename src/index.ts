@@ -83,6 +83,13 @@ const server = new Server(
   }
 );
 
+// Create a single transport and connect once so sessions persist across requests
+const transport = new StreamableHTTPServerTransport({
+  // Use client-provided mcp-session-id when present; generator is only a fallback
+  sessionIdGenerator: () => randomUUID(),
+});
+await server.connect(transport);
+
 // Helper to read session id from the standard MCP header
 function getSessionContext(req: express.Request) {
   const sessionId = (req.headers["mcp-session-id"] || req.headers["mcp-session-id"]) as string | undefined;
@@ -266,11 +273,6 @@ app.all("/mcp", async (req, res) => {
   try {
   const { sessionId } = getSessionContext(req);
 
-    // Create transport with user context
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-    });
-
       // Add session context to request params under _meta per MCP conventions
       if (req.method === "POST" && req.body && typeof req.body === "object") {
         // Some clients send batched requests; handle both single and array forms
@@ -292,7 +294,6 @@ app.all("/mcp", async (req, res) => {
         }
       }
 
-    await server.connect(transport);
     // Hand off the HTTP request to the transport per Streamable HTTP pattern
     if (req.method === "POST") {
       await transport.handleRequest(
