@@ -3,7 +3,7 @@ import cors from "cors";
 import { randomUUID } from "crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ErrorCode, McpError, } from "@modelcontextprotocol/sdk/types.js";
+import { ListToolsRequestSchema, CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ErrorCode, McpError, } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
 import { setupOAuthRoutes } from "./auth/auth.js";
 import { GraphTools } from "./tools/graphTools.js";
@@ -280,6 +280,11 @@ app.delete("/mcp", async (req, res) => {
         log.error("MCP DELETE error:", err);
         res.status(500).json({ error: "Failed to delete session" });
     }
+});
+// List available tools
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+    log.info("Listing tools");
+    return { tools: graphTools.getToolDefinitions() };
 });
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;

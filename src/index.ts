@@ -351,6 +351,12 @@ app.delete("/mcp", async (req, res) => {
   }
 });
 
+// List available tools
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  log.info("Listing tools");
+  return { tools: graphTools.getToolDefinitions() };
+});
+
 server.setRequestHandler(
   CallToolRequestSchema,
   async (request: CallToolRequest) => {
