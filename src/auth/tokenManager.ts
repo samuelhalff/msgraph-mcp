@@ -17,6 +17,8 @@ export class TokenManager {
     }
 
     async getToken(key: string): Promise<TokenData | null> {
+        log.info(`Getting token for key: ${key}`);
+        log.info(`Token for key ${key} ${this.tokens.has(key) ? 'exists' : 'not found'}`);
         return this.tokens.get(key) || null;
     }
 
