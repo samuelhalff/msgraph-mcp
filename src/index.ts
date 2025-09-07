@@ -35,8 +35,8 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: process.env.BASE_URL || "*",
-    methods: ["GET", "POST", "OPTIONS"],
-    exposedHeaders: ["mcp-session-id"],
+  methods: ["GET", "POST", "OPTIONS", "DELETE"],
+  exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
     allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id"],
   })
 );
@@ -83,16 +83,48 @@ const server = new Server(
   }
 );
 
-// Create a single transport and connect once so sessions persist across requests
-const transport = new StreamableHTTPServerTransport({
-  // Use client-provided mcp-session-id when present; generator is only a fallback
-  sessionIdGenerator: () => randomUUID(),
-});
-await server.connect(transport);
+// Per-session transport maps
+const transports = new Map<string, StreamableHTTPServerTransport>();
+const pendingTransports = new Map<string, Promise<StreamableHTTPServerTransport>>();
 
+function getHeaderSessionId(req: express.Request): string | undefined {
+  const h = req.headers["mcp-session-id"];
+  if (!h) return undefined;
+  return Array.isArray(h) ? h[0] : (h as string);
+}
+
+async function createAndConnectTransport(sessionId: string): Promise<StreamableHTTPServerTransport> {
+  if (transports.has(sessionId)) {
+    return transports.get(sessionId)!;
+  }
+  const existingPending = pendingTransports.get(sessionId);
+  if (existingPending) return existingPending;
+
+  const promise = (async () => {
+    const t = new StreamableHTTPServerTransport({
+      // Ensure the SDK uses this exact id for the session
+      sessionIdGenerator: () => sessionId,
+    });
+    // Explicitly assign the sessionId for consistent lookup
+    (t as unknown as { sessionId: string }).sessionId = sessionId;
+
+    // Cleanup on close
+    (t as unknown as { onclose?: () => void }).onclose = () => {
+      transports.delete(sessionId);
+    };
+
+    await server.connect(t);
+    transports.set(sessionId, t);
+    pendingTransports.delete(sessionId);
+    return t;
+  })();
+
+  pendingTransports.set(sessionId, promise);
+  return promise;
+}
 // Helper to read session id from the standard MCP header
 function getSessionContext(req: express.Request) {
-  const sessionId = (req.headers["mcp-session-id"] || req.headers["mcp-session-id"]) as string | undefined;
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (!sessionId) {
     throw new McpError(
       ErrorCode.InvalidRequest,
@@ -100,6 +132,17 @@ function getSessionContext(req: express.Request) {
     );
   }
   return { sessionId };
+}
+
+// Lightweight context extraction used by tool handlers
+type RequestContext = { sessionId: string };
+type ParamsWithMeta = { _meta?: { context?: RequestContext } };
+function extractRequestContext(params: unknown): RequestContext | undefined {
+  if (params && typeof params === "object") {
+    const p = params as ParamsWithMeta;
+    return p._meta?.context;
+  }
+  return undefined;
 }
 
 // Helper function to get access token for a session
@@ -134,25 +177,92 @@ async function getAccessTokenForSession(sessionId: string): Promise<string> {
   return tokenData.accessToken;
 }
 
-// Register MCP request handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  log.info("Listing tools");
-  return {
-    tools: graphTools.getToolDefinitions(),
-  };
+// MCP endpoint handlers (Streamable HTTP)
+app.post("/mcp", async (req, res) => {
+  const body = req.body as unknown;
+  const id = (body && typeof body === "object" && (body as any).id !== undefined) ? (body as any).id : null;
+  const method = (body && typeof body === "object") ? (body as any).method : undefined;
+
+  try {
+    const headerId = getHeaderSessionId(req);
+    const isInitialize = method === "initialize";
+
+    let effectiveSessionId: string;
+    let transport: StreamableHTTPServerTransport;
+
+    if (isInitialize) {
+      // Prefer client-provided session id (LibreChat sends userId). Otherwise generate one.
+      effectiveSessionId = headerId || randomUUID();
+      transport = await createAndConnectTransport(effectiveSessionId);
+      // Echo the session id for clients per spec
+      res.setHeader("Mcp-Session-Id", effectiveSessionId);
+    } else {
+      if (!headerId || !transports.get(headerId)) {
+        return res.status(404).json({
+          jsonrpc: "2.0",
+          error: { code: -32001, message: "Session not found" },
+          id,
+        });
+      }
+      effectiveSessionId = headerId;
+      transport = transports.get(effectiveSessionId)!;
+      res.setHeader("Mcp-Session-Id", effectiveSessionId);
+    }
+
+    // Attach session context to params._meta for supported methods (not initialize)
+    if (!isInitialize && body && typeof body === "object") {
+      const attachContext = (msg: any) => {
+        if (msg && typeof msg === "object") {
+          msg.params = msg.params || {};
+          const existingMeta = (msg.params as any)["_meta"] || {};
+          (msg.params as any)["_meta"] = {
+            ...existingMeta,
+            context: { sessionId: effectiveSessionId },
+          };
+        }
+      };
+
+      if (Array.isArray(body)) {
+        (body as any[]).forEach(attachContext);
+      } else {
+        attachContext(body);
+      }
+    }
+
+    await transport.handleRequest(
+      req as unknown as import("http").IncomingMessage,
+      res as unknown as import("http").ServerResponse,
+      body
+    );
+
+    log.info(`MCP connection established for session: ${effectiveSessionId}`);
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    log.error("MCP POST error:", err);
+    if (!res.headersSent) {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: `Bad Request: ${err.message}` },
+        id,
+      });
+    }
+  }
 });
 
-type RequestContext = { sessionId: string };
-
-// Narrow meta/context reading without using 'any'
-type ParamsWithMeta = { _meta?: { context?: RequestContext } };
-function extractRequestContext(params: unknown): RequestContext | undefined {
-  if (params && typeof params === "object") {
-    const p = params as ParamsWithMeta;
-    return p._meta?.context;
+app.delete("/mcp", async (req, res) => {
+  try {
+    const headerId = getHeaderSessionId(req);
+    if (!headerId || !transports.has(headerId)) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    transports.delete(headerId);
+    res.status(204).end();
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    log.error("MCP DELETE error:", err);
+    res.status(500).json({ error: "Failed to delete session" });
   }
-  return undefined;
-}
+});
 
 server.setRequestHandler(
   CallToolRequestSchema,
@@ -267,56 +377,6 @@ server.setRequestHandler(
 
 // Setup OAuth routes
 setupOAuthRoutes(app, tokenManager);
-
-// MCP endpoint handler
-app.all("/mcp", async (req, res) => {
-  try {
-  const { sessionId } = getSessionContext(req);
-
-      // Add session context to request params under _meta per MCP conventions
-      if (req.method === "POST" && req.body && typeof req.body === "object") {
-        // Some clients send batched requests; handle both single and array forms
-        const attachContext = (msg: any) => {
-          if (msg && typeof msg === "object") {
-            msg.params = msg.params || {};
-            const existingMeta = (msg.params as any)["_meta"] || {};
-            (msg.params as any)["_meta"] = {
-              ...existingMeta,
-              context: { sessionId },
-            };
-          }
-        };
-
-        if (Array.isArray(req.body)) {
-          req.body.forEach(attachContext);
-        } else {
-          attachContext(req.body);
-        }
-      }
-
-    // Hand off the HTTP request to the transport per Streamable HTTP pattern
-    if (req.method === "POST") {
-      await transport.handleRequest(
-        req as unknown as import("http").IncomingMessage,
-        res as unknown as import("http").ServerResponse,
-        req.body
-      );
-    } else {
-      await transport.handleRequest(
-        req as unknown as import("http").IncomingMessage,
-        res as unknown as import("http").ServerResponse
-      );
-    }
-  log.info(`MCP connection established for session: ${sessionId}`);
-  } catch (error: unknown) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    log.error("MCP connection error:", err);
-    res.status(400).json({
-      error: "MCP_CONNECTION_ERROR",
-      message: err.message,
-    });
-  }
-});
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
