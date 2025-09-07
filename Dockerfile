@@ -1,47 +1,28 @@
-# Microsoft Graph MCP Server Dockerfile - Optimized
-FROM node:18-alpine AS builder
+FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy package files first for better caching
+# Install curl for health checks
+RUN apk add --no-cache curl
+
+# Copy package files
 COPY package*.json ./
 
-# Install dependencies (including dev for build)
-RUN npm ci
+# Install dependencies
+RUN npm ci --only=production
 
-# Copy source files
-COPY api/ ./api/
-COPY types.d.ts ./
-COPY tsconfig.json ./
+# Copy source code
+COPY . .
 
-# Build the app
+# Build the application
 RUN npm run build
 
-# -------------------------
-# Production stage
-# -------------------------
-FROM node:18-alpine AS production
-
-RUN apk add --no-cache curl && \
-    addgroup -g 1001 -S nodejs && \
-    adduser -S mcp -u 1001
-
-WORKDIR /app
-
-# Copy and install only prod dependencies
-COPY package*.json ./
-RUN npm ci --only=production && npm cache clean --force
-
-# Copy compiled output
-COPY --from=builder --chown=mcp:nodejs /app/dist ./dist
-
-# Switch to non-root user
-USER mcp
-
+# Expose port
 EXPOSE 3001
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["curl", "-f", "http://localhost:3001/health"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3001/health || exit 1
 
-# Start server
-CMD ["node", "dist/api/index.js"]
+# Start the server
+CMD ["npm", "start"]
