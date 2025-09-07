@@ -35,15 +35,27 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: process.env.BASE_URL || "*",
-  methods: ["GET", "POST", "OPTIONS", "DELETE"],
-  exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
-    allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id"],
+    methods: ["GET", "POST", "OPTIONS", "DELETE"],
+    exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
+    allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id", "Mcp-Session-Id"],
   })
 );
 
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// OAuth Protected Resource metadata (RFC 9728-style)
+app.get("/.well-known/oauth-protected-resource", (req, res) => {
+  res.json({
+    resource: `http://msgraph-mcp:${process.env.PORT || 3000}`,
+    authorization_servers: [
+      `https://login.microsoftonline.com/${process.env.TENANT_ID}/v2.0`,
+    ],
+    scopes_supported: ["User.Read", "Mail.Read", "Calendars.Read", "Files.Read"],
+    bearer_methods_supported: ["header"],
+  });
 });
 
 // Well-known endpoint for MCP server discovery
@@ -85,15 +97,61 @@ const server = new Server(
 
 // Per-session transport maps
 const transports = new Map<string, StreamableHTTPServerTransport>();
-const pendingTransports = new Map<string, Promise<StreamableHTTPServerTransport>>();
+const pendingTransports = new Map<
+  string,
+  Promise<StreamableHTTPServerTransport>
+>();
+
+// Session inactivity cleanup
+const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+const sessionTimers = new Map<string, NodeJS.Timeout>();
+
+function resetSessionTimer(sessionId: string) {
+  const existing = sessionTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(() => {
+    const t = transports.get(sessionId);
+    try {
+      (t as unknown as { close?: () => void })?.close?.();
+    } catch (e) {
+      // ignore close errors
+    }
+    transports.delete(sessionId);
+    sessionTimers.delete(sessionId);
+    log.info(`Session ${sessionId} expired due to inactivity`);
+  }, SESSION_TIMEOUT);
+
+  sessionTimers.set(sessionId, timer);
+}
+
+function markSessionActiveDuringRequest(
+  sessionId: string,
+  res: express.Response
+) {
+  // Pause any existing timer while the request is being processed
+  const existing = sessionTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+
+  const done = () => resetSessionTimer(sessionId);
+  res.once("finish", done);
+  res.once("close", done);
+}
+
+function getSessionId(req: express.Request): string | undefined {
+  return req.headers["mcp-session-id"] as string || 
+         req.headers["Mcp-Session-Id"] as string;
+}
 
 function getHeaderSessionId(req: express.Request): string | undefined {
-  const h = req.headers["mcp-session-id"];
+  const h = getSessionId(req);
   if (!h) return undefined;
   return Array.isArray(h) ? h[0] : (h as string);
 }
 
-async function createAndConnectTransport(sessionId: string): Promise<StreamableHTTPServerTransport> {
+async function createAndConnectTransport(
+  sessionId: string
+): Promise<StreamableHTTPServerTransport> {
   if (transports.has(sessionId)) {
     return transports.get(sessionId)!;
   }
@@ -101,22 +159,31 @@ async function createAndConnectTransport(sessionId: string): Promise<StreamableH
   if (existingPending) return existingPending;
 
   const promise = (async () => {
-    const t = new StreamableHTTPServerTransport({
-      // Ensure the SDK uses this exact id for the session
-      sessionIdGenerator: () => sessionId,
-    });
-    // Explicitly assign the sessionId for consistent lookup
-    (t as unknown as { sessionId: string }).sessionId = sessionId;
+    try {
+      const t = new StreamableHTTPServerTransport({
+        // Ensure the SDK uses this exact id for the session
+        sessionIdGenerator: () => sessionId,
+      });
+      // Explicitly assign the sessionId for consistent lookup
+      (t as unknown as { sessionId: string }).sessionId = sessionId;
 
-    // Cleanup on close
-    (t as unknown as { onclose?: () => void }).onclose = () => {
-      transports.delete(sessionId);
-    };
+      // Cleanup on close
+      (t as unknown as { onclose?: () => void }).onclose = () => {
+        transports.delete(sessionId);
+        const existing = sessionTimers.get(sessionId);
+        if (existing) clearTimeout(existing);
+        sessionTimers.delete(sessionId);
+      };
 
-    await server.connect(t);
-    transports.set(sessionId, t);
-    pendingTransports.delete(sessionId);
-    return t;
+      await server.connect(t);
+      transports.set(sessionId, t);
+      pendingTransports.delete(sessionId);
+      resetSessionTimer(sessionId);
+      return t;
+    } catch (error) {
+      pendingTransports.delete(sessionId);
+      throw error;
+    }
   })();
 
   pendingTransports.set(sessionId, promise);
@@ -180,8 +247,12 @@ async function getAccessTokenForSession(sessionId: string): Promise<string> {
 // MCP endpoint handlers (Streamable HTTP)
 app.post("/mcp", async (req, res) => {
   const body = req.body as unknown;
-  const id = (body && typeof body === "object" && (body as any).id !== undefined) ? (body as any).id : null;
-  const method = (body && typeof body === "object") ? (body as any).method : undefined;
+  const id =
+    body && typeof body === "object" && (body as any).id !== undefined
+      ? (body as any).id
+      : null;
+  const method =
+    body && typeof body === "object" ? (body as any).method : undefined;
 
   try {
     const headerId = getHeaderSessionId(req);
@@ -196,17 +267,24 @@ app.post("/mcp", async (req, res) => {
       transport = await createAndConnectTransport(effectiveSessionId);
       // Echo the session id for clients per spec
       res.setHeader("Mcp-Session-Id", effectiveSessionId);
+  // Mark active during this request to avoid mid-stream timeout
+  markSessionActiveDuringRequest(effectiveSessionId, res);
     } else {
       if (!headerId || !transports.get(headerId)) {
         return res.status(404).json({
           jsonrpc: "2.0",
-          error: { code: -32001, message: "Session not found" },
+          error: {
+            code: ErrorCode.InvalidRequest,
+            message: "Session not found or expired",
+          },
           id,
         });
       }
       effectiveSessionId = headerId;
       transport = transports.get(effectiveSessionId)!;
       res.setHeader("Mcp-Session-Id", effectiveSessionId);
+  // Mark active during this request to avoid mid-stream timeout
+  markSessionActiveDuringRequest(effectiveSessionId, res);
     }
 
     // Attach session context to params._meta for supported methods (not initialize)
@@ -255,7 +333,16 @@ app.delete("/mcp", async (req, res) => {
     if (!headerId || !transports.has(headerId)) {
       return res.status(404).json({ error: "Session not found" });
     }
+    const t = transports.get(headerId);
+    try {
+      (t as unknown as { close?: () => void })?.close?.();
+    } catch (e) {
+      // ignore close errors
+    }
     transports.delete(headerId);
+  const existing = sessionTimers.get(headerId);
+  if (existing) clearTimeout(existing);
+  sessionTimers.delete(headerId);
     res.status(204).end();
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -277,7 +364,7 @@ server.setRequestHandler(
     }
 
     try {
-  const accessToken = await getAccessTokenForSession(context.sessionId);
+      const accessToken = await getAccessTokenForSession(context.sessionId);
       const graphService = new GraphService(accessToken);
 
       const result = await graphTools.executeTool(
@@ -337,7 +424,7 @@ server.setRequestHandler(
     }
 
     try {
-  const accessToken = await getAccessTokenForSession(context.sessionId);
+      const accessToken = await getAccessTokenForSession(context.sessionId);
       const graphService = new GraphService(accessToken);
 
       let data;

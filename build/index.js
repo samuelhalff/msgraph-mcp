@@ -3,7 +3,7 @@ import cors from "cors";
 import { randomUUID } from "crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ListToolsRequestSchema, CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ErrorCode, McpError, } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, ErrorCode, McpError, } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
 import { setupOAuthRoutes } from "./auth/auth.js";
 import { GraphTools } from "./tools/graphTools.js";
@@ -19,14 +19,24 @@ app.use(express.urlencoded({ extended: true }));
 // CORS middleware (configure appropriately for production)
 app.use(cors({
     origin: process.env.BASE_URL || "*",
-    // origin: ['https://your-remote-domain.com', 'https://your-other-remote-domain.com'],
-    methods: ["GET", "POST", "OPTIONS"],
-    exposedHeaders: ["mcp-session-id"],
-    allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id"],
+    methods: ["GET", "POST", "OPTIONS", "DELETE"],
+    exposedHeaders: ["Mcp-Session-Id", "WWW-Authenticate"],
+    allowedHeaders: ["Content-Type", "Authorization", "mcp-session-id", "Mcp-Session-Id"],
 }));
 // Health check endpoint
 app.get("/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+// OAuth Protected Resource metadata (RFC 9728-style)
+app.get("/.well-known/oauth-protected-resource", (req, res) => {
+    res.json({
+        resource: `http://msgraph-mcp:${process.env.PORT || 3000}`,
+        authorization_servers: [
+            `https://login.microsoftonline.com/${process.env.TENANT_ID}/v2.0`,
+        ],
+        scopes_supported: ["User.Read", "Mail.Read", "Calendars.Read", "Files.Read"],
+        bearer_methods_supported: ["header"],
+    });
 });
 // Well-known endpoint for MCP server discovery
 app.get("/mcp/.well-known", (req, res) => {
@@ -59,13 +69,100 @@ const server = new Server({
         resources: {},
     },
 });
+// Per-session transport maps
+const transports = new Map();
+const pendingTransports = new Map();
+// Session inactivity cleanup
+const SESSION_TIMEOUT = 30 * 60 * 1000; // 30 minutes
+const sessionTimers = new Map();
+function resetSessionTimer(sessionId) {
+    const existing = sessionTimers.get(sessionId);
+    if (existing)
+        clearTimeout(existing);
+    const timer = setTimeout(() => {
+        const t = transports.get(sessionId);
+        try {
+            t?.close?.();
+        }
+        catch (e) {
+            // ignore close errors
+        }
+        transports.delete(sessionId);
+        sessionTimers.delete(sessionId);
+        log.info(`Session ${sessionId} expired due to inactivity`);
+    }, SESSION_TIMEOUT);
+    sessionTimers.set(sessionId, timer);
+}
+function markSessionActiveDuringRequest(sessionId, res) {
+    // Pause any existing timer while the request is being processed
+    const existing = sessionTimers.get(sessionId);
+    if (existing)
+        clearTimeout(existing);
+    const done = () => resetSessionTimer(sessionId);
+    res.once("finish", done);
+    res.once("close", done);
+}
+function getSessionId(req) {
+    return req.headers["mcp-session-id"] ||
+        req.headers["Mcp-Session-Id"];
+}
+function getHeaderSessionId(req) {
+    const h = getSessionId(req);
+    if (!h)
+        return undefined;
+    return Array.isArray(h) ? h[0] : h;
+}
+async function createAndConnectTransport(sessionId) {
+    if (transports.has(sessionId)) {
+        return transports.get(sessionId);
+    }
+    const existingPending = pendingTransports.get(sessionId);
+    if (existingPending)
+        return existingPending;
+    const promise = (async () => {
+        try {
+            const t = new StreamableHTTPServerTransport({
+                // Ensure the SDK uses this exact id for the session
+                sessionIdGenerator: () => sessionId,
+            });
+            // Explicitly assign the sessionId for consistent lookup
+            t.sessionId = sessionId;
+            // Cleanup on close
+            t.onclose = () => {
+                transports.delete(sessionId);
+                const existing = sessionTimers.get(sessionId);
+                if (existing)
+                    clearTimeout(existing);
+                sessionTimers.delete(sessionId);
+            };
+            await server.connect(t);
+            transports.set(sessionId, t);
+            pendingTransports.delete(sessionId);
+            resetSessionTimer(sessionId);
+            return t;
+        }
+        catch (error) {
+            pendingTransports.delete(sessionId);
+            throw error;
+        }
+    })();
+    pendingTransports.set(sessionId, promise);
+    return promise;
+}
 // Helper to read session id from the standard MCP header
 function getSessionContext(req) {
-    const sessionId = (req.headers["mcp-session-id"] || req.headers["mcp-session-id"]);
+    const sessionId = req.headers["mcp-session-id"];
     if (!sessionId) {
         throw new McpError(ErrorCode.InvalidRequest, "Missing mcp-session-id header");
     }
     return { sessionId };
+}
+function extractRequestContext(params) {
+    if (params && typeof params === "object") {
+        const p = params;
+        return p._meta?.context;
+    }
+    return undefined;
 }
 // Helper function to get access token for a session
 async function getAccessTokenForSession(sessionId) {
@@ -86,20 +183,104 @@ async function getAccessTokenForSession(sessionId) {
     }
     return tokenData.accessToken;
 }
-// Register MCP request handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-    log.info("Listing tools");
-    return {
-        tools: graphTools.getToolDefinitions(),
-    };
-});
-function extractRequestContext(params) {
-    if (params && typeof params === "object") {
-        const p = params;
-        return p._meta?.context;
+// MCP endpoint handlers (Streamable HTTP)
+app.post("/mcp", async (req, res) => {
+    const body = req.body;
+    const id = body && typeof body === "object" && body.id !== undefined
+        ? body.id
+        : null;
+    const method = body && typeof body === "object" ? body.method : undefined;
+    try {
+        const headerId = getHeaderSessionId(req);
+        const isInitialize = method === "initialize";
+        let effectiveSessionId;
+        let transport;
+        if (isInitialize) {
+            // Prefer client-provided session id (LibreChat sends userId). Otherwise generate one.
+            effectiveSessionId = headerId || randomUUID();
+            transport = await createAndConnectTransport(effectiveSessionId);
+            // Echo the session id for clients per spec
+            res.setHeader("Mcp-Session-Id", effectiveSessionId);
+            // Mark active during this request to avoid mid-stream timeout
+            markSessionActiveDuringRequest(effectiveSessionId, res);
+        }
+        else {
+            if (!headerId || !transports.get(headerId)) {
+                return res.status(404).json({
+                    jsonrpc: "2.0",
+                    error: {
+                        code: ErrorCode.InvalidRequest,
+                        message: "Session not found or expired",
+                    },
+                    id,
+                });
+            }
+            effectiveSessionId = headerId;
+            transport = transports.get(effectiveSessionId);
+            res.setHeader("Mcp-Session-Id", effectiveSessionId);
+            // Mark active during this request to avoid mid-stream timeout
+            markSessionActiveDuringRequest(effectiveSessionId, res);
+        }
+        // Attach session context to params._meta for supported methods (not initialize)
+        if (!isInitialize && body && typeof body === "object") {
+            const attachContext = (msg) => {
+                if (msg && typeof msg === "object") {
+                    msg.params = msg.params || {};
+                    const existingMeta = msg.params["_meta"] || {};
+                    msg.params["_meta"] = {
+                        ...existingMeta,
+                        context: { sessionId: effectiveSessionId },
+                    };
+                }
+            };
+            if (Array.isArray(body)) {
+                body.forEach(attachContext);
+            }
+            else {
+                attachContext(body);
+            }
+        }
+        await transport.handleRequest(req, res, body);
+        log.info(`MCP connection established for session: ${effectiveSessionId}`);
     }
-    return undefined;
-}
+    catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error("MCP POST error:", err);
+        if (!res.headersSent) {
+            res.status(400).json({
+                jsonrpc: "2.0",
+                error: { code: -32000, message: `Bad Request: ${err.message}` },
+                id,
+            });
+        }
+    }
+});
+app.delete("/mcp", async (req, res) => {
+    try {
+        const headerId = getHeaderSessionId(req);
+        if (!headerId || !transports.has(headerId)) {
+            return res.status(404).json({ error: "Session not found" });
+        }
+        const t = transports.get(headerId);
+        try {
+            t?.close?.();
+        }
+        catch (e) {
+            // ignore close errors
+        }
+        transports.delete(headerId);
+        const existing = sessionTimers.get(headerId);
+        if (existing)
+            clearTimeout(existing);
+        sessionTimers.delete(headerId);
+        res.status(204).end();
+    }
+    catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.error("MCP DELETE error:", err);
+        res.status(500).json({ error: "Failed to delete session" });
+    }
+});
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     log.info(`Calling tool: ${name}`, args);
@@ -185,41 +366,6 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 });
 // Setup OAuth routes
 setupOAuthRoutes(app, tokenManager);
-// MCP endpoint handler
-app.all("/mcp", async (req, res) => {
-    try {
-        const { sessionId } = getSessionContext(req);
-        // Create transport with user context
-        const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-        });
-        // Add user context to request metadata using MCP-compliant _meta
-        if (req.method === "POST" && req.body && typeof req.body === "object") {
-            // Ensure _meta exists and attach context
-            req.body._meta = {
-                ...(req.body._meta || {}),
-                context: { sessionId },
-            };
-        }
-        await server.connect(transport);
-        // Hand off the HTTP request to the transport per Streamable HTTP pattern
-        if (req.method === "POST") {
-            await transport.handleRequest(req, res, req.body);
-        }
-        else {
-            await transport.handleRequest(req, res);
-        }
-        log.info(`MCP connection established for session: ${sessionId}`);
-    }
-    catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        log.error("MCP connection error:", err);
-        res.status(400).json({
-            error: "MCP_CONNECTION_ERROR",
-            message: err.message,
-        });
-    }
-});
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
     log.info(`Microsoft Graph MCP Server running on port ${port}`);
