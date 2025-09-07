@@ -33,7 +33,6 @@ app.use((req, res, next) => {
   res.setHeader("X-Request-Id", requestId);
   const safeHeaders = {
     "mcp-session-id": req.headers["mcp-session-id"],
-    "X-User-ID": req.headers["X-User-ID"],
     "content-type": req.headers["content-type"],
     accept: req.headers["accept"],
     "user-agent": req.headers["user-agent"],
@@ -60,7 +59,7 @@ app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   // Only allow Content-Type and mcp-session-id headers
-  res.header("Access-Control-Allow-Headers", "Content-Type, mcp-session-id, X-User-ID");
+  res.header("Access-Control-Allow-Headers", "Content-Type, mcp-session-id");
   if (req.method === "OPTIONS") return res.status(200).end();
   next();
 });
@@ -111,7 +110,7 @@ const server = new Server(
 
 // Helper function to get session context from headers (mcp-session-id only)
 function getSessionContext(req: express.Request) {
-  const sessionId = (req.headers["mcp-session-id"] as string) || req.headers["X-User-ID"] || "";
+  const sessionId = (req.headers["mcp-session-id"] as string) || "";
   if (!sessionId) {
     throw new McpError(
       ErrorCode.InvalidRequest,
