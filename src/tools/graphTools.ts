@@ -105,19 +105,21 @@ export class GraphTools {
       case 'get_user_profile':
         return await graphService.getUserProfile();
 
-      case 'get_messages':
+      case 'get_messages': {
         const messageCount = Math.min(args.top || 10, 50);
         return await graphService.getMessages(messageCount);
+      }
 
-      case 'get_calendar_events':
+      case 'get_calendar_events': {
         const eventCount = Math.min(args.top || 10, 50);
         return await graphService.getEvents(eventCount);
+      }
 
       case 'send_email':
         await graphService.sendMail(args.subject, args.content, args.to);
         return { success: true, message: 'Email sent successfully' };
 
-      case 'create_calendar_event':
+      case 'create_calendar_event': {
         const event = await graphService.createCalendarEvent(
           args.subject,
           args.start,
@@ -125,6 +127,7 @@ export class GraphTools {
           args.attendees
         );
         return { success: true, event };
+      }
 
       default:
         throw new Error(`Unknown tool: ${toolName}`);

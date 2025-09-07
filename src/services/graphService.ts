@@ -19,19 +19,19 @@ export class GraphService {
 
   async getUserProfile(): Promise<GraphUser> {
     log.info('Fetching user profile');
-    const response = await this.client.get('/me');
+    const response = await this.client.get<GraphUser>('/me');
     return response.data;
   }
 
   async getMessages(top: number = 10): Promise<GraphMessage[]> {
     log.info(`Fetching top ${top} messages`);
-    const response = await this.client.get(`/me/messages?$top=${top}&$select=id,subject,from,receivedDateTime,bodyPreview`);
+    const response = await this.client.get<{ value: GraphMessage[] }>(`/me/messages?$top=${top}&$select=id,subject,from,receivedDateTime,bodyPreview`);
     return response.data.value;
   }
 
   async getEvents(top: number = 10): Promise<GraphEvent[]> {
     log.info(`Fetching top ${top} calendar events`);
-    const response = await this.client.get(`/me/events?$top=${top}&$select=id,subject,start,end,organizer`);
+    const response = await this.client.get<{ value: GraphEvent[] }>(`/me/events?$top=${top}&$select=id,subject,start,end,organizer`);
     return response.data.value;
   }
 
@@ -71,7 +71,7 @@ export class GraphService {
       })) || []
     };
 
-    const response = await this.client.post('/me/events', event);
+    const response = await this.client.post<GraphEvent>('/me/events', event);
     return response.data;
   }
 }
