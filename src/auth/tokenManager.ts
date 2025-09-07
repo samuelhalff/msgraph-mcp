@@ -42,4 +42,12 @@ export class TokenManager {
     log.info(`Refresh requested but not implemented`);
     throw new Error("Token refresh not implemented - please re-authenticate");
   }
+
+  public dumpTokens(): void {
+    const entries = Array.from(this.tokens.entries()).map(([k, v]) => ({
+      sessionId: k,
+      expiresAt: v.expiresAt,
+    }));
+    log.info("All stored tokens:", entries);
+  }
 }
