@@ -137,7 +137,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
   );
 });
 // MCP transport endpoint
-app.post("/mcp", (req, res) => {
+app.post("/mcp", async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({
@@ -152,11 +152,12 @@ app.post("/mcp", (req, res) => {
       transports[sessionId] = transport;
     },
   });
-  mcp.connect(transport).catch((err) => {
-    res
-      .status(400)
-      .json({ error: "MCP_CONNECTION_ERROR", message: err.message });
-  });
+  try {
+    await mcp.connect(transport);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: "MCP_CONNECTION_ERROR", message });
+  }
 });
 
 // Start server
