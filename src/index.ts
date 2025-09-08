@@ -21,7 +21,9 @@ app.use(express.json());
 // Health endpoint
 app.get("/health", (_req, res) => res.sendStatus(200));
 
-function getBearerToken(_meta?: { headers?: { authorization?: string } }): string | null {
+function getBearerToken(_meta?: {
+  headers?: { authorization?: string };
+}): string | null {
   const auth = _meta?.headers?.authorization;
   if (!auth) return null;
   const [scheme, token] = auth.split(" ");
@@ -128,10 +130,21 @@ mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
       "OAuth authentication required"
     );
   const service = new GraphService(token);
-  return graphTools.executeTool(request.params.name, request.params.arguments, service);
+  return graphTools.executeTool(
+    request.params.name,
+    request.params.arguments,
+    service
+  );
 });
 // MCP transport endpoint
 app.post("/mcp", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({
+      error: "authentication_required",
+      error_description: "OAuth authentication required",
+    });
+  }
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => (req.headers["mcp-session-id"] as string) || "",
     onsessioninitialized: (sessionId) => {
